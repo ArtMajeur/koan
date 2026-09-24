@@ -124,8 +124,13 @@ def _is_sso_error(stderr: str) -> bool:
     return "SSO" in upper or "SAML" in upper
 
 # Cached GitHub username (from gh api user fallback).
-# None = not yet queried, "" = query failed.
+# None = not yet queried, "" = query failed (retried after the TTL below).
 _cached_gh_username = None
+_gh_username_failed_at = 0.0
+# A failure is cached only briefly: several callers per iteration must not
+# each pay the gh timeout, but a transient blip must not disable
+# author-scoped features (review/CI dispatch fail closed) until restart.
+_GH_USERNAME_FAILURE_TTL = 300  # 5 minutes
 
 
 def run_gh(
@@ -510,11 +515,12 @@ def get_gh_username() -> str:
 
     Resolution order:
     1. ``GITHUB_USER`` env var (via ``github_auth.get_github_user()``)
-    2. ``gh api user --jq .login`` (cached after first call)
+    2. ``gh api user --jq .login`` (cached after first success; a failure
+       is cached for ``_GH_USERNAME_FAILURE_TTL`` seconds, then retried)
 
     Returns empty string if neither source yields a username.
     """
-    global _cached_gh_username
+    global _cached_gh_username, _gh_username_failed_at
 
     from app.github_auth import get_github_user
     env_user = get_github_user()
@@ -522,8 +528,13 @@ def get_gh_username() -> str:
         return env_user
 
     # Fallback: ask gh who is authenticated
-    if _cached_gh_username is not None:
+    if _cached_gh_username:
         return _cached_gh_username
+    if (
+        _cached_gh_username == ""
+        and time.monotonic() - _gh_username_failed_at < _GH_USERNAME_FAILURE_TTL
+    ):
+        return ""
 
     try:
         _cached_gh_username = run_gh("api", "user", "--jq", ".login", timeout=15)
@@ -532,6 +543,9 @@ def get_gh_username() -> str:
             "get_gh_username failed: %s", exc, exc_info=True,
         )
         _cached_gh_username = ""
+
+    if not _cached_gh_username:
+        _gh_username_failed_at = time.monotonic()
 
     return _cached_gh_username
 

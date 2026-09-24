@@ -869,7 +869,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 
 Kōan also **auto-forwards unresolved human review comments** on its open PRs. During the GitHub notification polling loop, `review_comment_dispatch` checks Kōan-created PRs — open PRs authored by Kōan's own GitHub user (`GITHUB_USER`, else the `gh` login) on its branch prefix — for new review comments and creates missions to address the feedback — no explicit @mention required. Fingerprint-based deduplication (SHA-256 of sorted comment IDs) prevents re-dispatching the same set of comments. Bot comments are filtered out automatically.
 
-Ownership is decided by author, not by branch name alone: in a fork, `gh` resolves to the upstream repo, where a maintainer or another Kōan instance may use the same `koan/` prefix. If Kōan's GitHub user cannot be resolved, both review and CI dispatch skip the project rather than guess.
+Ownership is decided by author, not by branch name alone: in a fork, `gh` resolves to the upstream repo, where a maintainer or another Kōan instance may use the same `koan/` prefix. If Kōan's GitHub user cannot be resolved, both review and CI dispatch skip the project rather than guess. A failed `gh` lookup is retried after 5 minutes, so a transient network or auth blip does not disable dispatch until restart; set `GITHUB_USER` to skip the lookup entirely.
 
 Configure this behavior in `config.yaml`:
 

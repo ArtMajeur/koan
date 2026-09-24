@@ -417,8 +417,37 @@ class TestGetGhUsername:
     def test_caches_failure_as_empty(self, mock_gh, mock_get_user):
         assert get_gh_username() == ""
         assert get_gh_username() == ""
-        # Only one call — failure is cached too
+        # Only one call — failure is cached too (within the TTL)
         mock_gh.assert_called_once()
+
+    @patch("app.github_auth.get_github_user", return_value="")
+    @patch("app.github.run_gh", side_effect=[RuntimeError("blip"), "koan-bot"])
+    def test_retries_after_failure_ttl(self, mock_gh, mock_get_user):
+        """A transient failure must not disable author filtering until restart."""
+        clock = [1000.0]
+        with patch("app.github.time.monotonic", side_effect=lambda: clock[0]):
+            assert get_gh_username() == ""
+            clock[0] += github_module._GH_USERNAME_FAILURE_TTL - 1
+            assert get_gh_username() == ""
+            assert mock_gh.call_count == 1
+            clock[0] += 2
+            assert get_gh_username() == "koan-bot"
+            assert mock_gh.call_count == 2
+            # Success is cached permanently.
+            clock[0] += 10 * github_module._GH_USERNAME_FAILURE_TTL
+            assert get_gh_username() == "koan-bot"
+            assert mock_gh.call_count == 2
+
+    @patch("app.github_auth.get_github_user", return_value="")
+    @patch("app.github.run_gh", side_effect=["", "koan-bot"])
+    def test_empty_output_treated_as_failure(self, mock_gh, mock_get_user):
+        clock = [1000.0]
+        with patch("app.github.time.monotonic", side_effect=lambda: clock[0]):
+            assert get_gh_username() == ""
+            assert get_gh_username() == ""
+            assert mock_gh.call_count == 1
+            clock[0] += github_module._GH_USERNAME_FAILURE_TTL + 1
+            assert get_gh_username() == "koan-bot"
 
     @patch("app.github_auth.get_github_user", return_value="env-user")
     def test_env_var_takes_priority_over_cache(self, mock_get_user):
