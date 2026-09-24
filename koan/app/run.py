@@ -878,7 +878,7 @@ def _notify_mission_normal(
     # run — a "Done" line every interval is pure noise. Any real finding
     # reaches chat through the agent's own outbox conclusion.
     from app.recurring import is_recurring_mission
-    if is_recurring_mission(title):
+    if is_recurring_mission(title, Path(instance) / "recurring.json"):
         from app.run_log import log_safe
         log_safe(
             "mission",
@@ -895,11 +895,10 @@ def _notify_idle(instance: str):
     recurring poll every 30 min) re-arms it, so in normal mode it is logged
     only. The auto-pause notice is what the human can act on.
     """
-    try:
+    schedule_active = False
+    with suppress_logged(log, "warning", "Schedule active check failed", Exception):
         from app.schedule_manager import is_scheduled_active
         schedule_active = is_scheduled_active()
-    except (ImportError, Exception):
-        schedule_active = False
     if schedule_active:
         msg = ("💤 No work available — but schedule is active, "
                "staying awake for missions.")

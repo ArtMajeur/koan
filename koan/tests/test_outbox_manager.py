@@ -324,6 +324,49 @@ class TestFlush:
         # Staging should be cleaned up
         assert not mgr.staging_path.exists()
 
+    @patch("app.outbox_manager.is_below_min_priority", return_value=True)
+    @patch("app.outbox_manager.send_telegram", return_value=NOTIFICATION_SUPPRESSED)
+    @patch("app.outbox_manager.scan_and_log")
+    @patch("app.outbox_manager.log")
+    def test_flush_skips_formatter_for_suppressed_priority(
+        self, mock_log, mock_scan, mock_send, mock_below, outbox_env
+    ):
+        # A message headed for the journal must not cost an LLM formatter call.
+        mgr, outbox_file, _ = outbox_env
+        outbox_file.write_text("[priority:info]\n🏁 Poll done, nothing new")
+        mock_scan.return_value = MagicMock(blocked=False)
+
+        with patch.object(mgr, "_format_message") as mock_fmt:
+            mgr.flush()
+
+        mock_fmt.assert_not_called()
+        mock_below.assert_called_once_with(NotificationPriority.INFO)
+        mock_send.assert_called_once_with(
+            "🏁 Poll done, nothing new", priority=NotificationPriority.INFO,
+        )
+        assert outbox_file.read_text() == ""
+
+    @patch("app.outbox_manager.OutboxManager._get_last_message_id", return_value=42)
+    @patch("app.outbox_manager.save_conversation_message")
+    @patch("app.outbox_manager.is_below_min_priority", return_value=False)
+    @patch("app.outbox_manager.send_telegram", return_value=True)
+    @patch("app.outbox_manager.scan_and_log")
+    @patch("app.outbox_manager.log")
+    def test_flush_formats_info_when_threshold_allows_it(
+        self, mock_log, mock_scan, mock_send, mock_below, mock_save, mock_id, outbox_env
+    ):
+        # min_priority: info → the message reaches chat, so it is formatted.
+        mgr, outbox_file, _ = outbox_env
+        outbox_file.write_text("[priority:info]\nLow priority update")
+        mock_scan.return_value = MagicMock(blocked=False)
+
+        with patch.object(mgr, "_format_message", return_value="Formatted!") as mock_fmt, \
+             patch.object(mgr, "_expand_github_refs", return_value="Formatted!"):
+            mgr.flush()
+
+        mock_fmt.assert_called_once_with("Low priority update")
+        assert mock_send.call_args[0][0] == "Formatted!"
+
     @patch("app.outbox_manager.log")
     @patch("app.outbox_manager.scan_and_log")
     def test_flush_blocks_quarantined_content(self, mock_scan, mock_log, outbox_env):

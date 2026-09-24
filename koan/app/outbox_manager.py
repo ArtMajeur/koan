@@ -23,7 +23,9 @@ from app.format_outbox import (
     load_memory_context,
     load_soul,
 )
-from app.notify import NotificationPriority, NOTIFICATION_SUPPRESSED, send_telegram
+from app.notify import (
+    NotificationPriority, NOTIFICATION_SUPPRESSED, is_below_min_priority, send_telegram,
+)
 from app.outbox_scanner import scan_and_log
 from app.utils import append_to_outbox, atomic_write
 
@@ -186,8 +188,13 @@ class OutboxManager:
             return
 
         priority, clean_content = parse_outbox_priority(content)
-        formatted = self._format_message(clean_content)
-        formatted = self._expand_github_refs(formatted, clean_content)
+        if is_below_min_priority(priority):
+            # Headed for the journal, not chat — skip the LLM formatter call
+            # and keep the full, untruncated text.
+            formatted = clean_content
+        else:
+            formatted = self._format_message(clean_content)
+            formatted = self._expand_github_refs(formatted, clean_content)
         result = send_telegram(formatted, priority=priority)
 
         if result is NOTIFICATION_SUPPRESSED:

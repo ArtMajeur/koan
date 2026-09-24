@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, TypeVar
 
-from app.utils import atomic_write, insert_pending_mission
+from app.utils import PROJECT_TAG_STRIP_RE, atomic_write, insert_pending_mission
 
 T = TypeVar("T")
 
@@ -539,14 +539,42 @@ def is_due(mission: Dict, now: Optional[datetime] = None) -> bool:
     return False
 
 
-# Matches the frequency tag _inject_one() puts at the start of an injected
-# mission ("[daily] …", "[every 30m] …"), after the project tag is stripped.
-_INJECTED_TAG_RE = re.compile(r"^\s*\[(?:hourly|daily|weekly|every [^\]]+)\]\s")
+def _injection_tag(mission: Dict) -> str:
+    """Frequency tag prefixed to an injected mission ("[daily] ", "[every 30m] ")."""
+    freq = mission["frequency"]
+    if freq == "every":
+        interval_display = mission.get("interval_display") or format_interval(mission.get("interval_seconds", 0))
+        return f"[every {interval_display}] "
+    return f"[{freq}] "
 
 
-def is_recurring_mission(mission_title: str) -> bool:
-    """True if the mission was injected by the recurring scheduler."""
-    return bool(_INJECTED_TAG_RE.match(mission_title or ""))
+def _injection_match_key(text: str) -> str:
+    """Normalize an injected mission's text for comparison.
+
+    Drops lifecycle markers and the project tag (the parallel picker keeps it,
+    the sequential one strips it), and collapses whitespace because
+    insert_mission() flattens newlines in multi-line recurring texts.
+    """
+    from app.missions import canonical_mission_key
+
+    text = PROJECT_TAG_STRIP_RE.sub("", canonical_mission_key(text))
+    return " ".join(text.split())
+
+
+def is_recurring_mission(mission_title: str, recurring_path: Path) -> bool:
+    """True if the title is an injection of a mission registered in recurring.json.
+
+    Matched against the registry, not just the leading tag, so an operator
+    one-off that merely starts with "[daily] " is not mistaken for one.
+    """
+    title = _injection_match_key(mission_title or "")
+    if not title.startswith("["):
+        return False
+    return any(
+        title == _injection_match_key(_injection_tag(m) + m["text"])
+        for m in load_recurring(recurring_path)
+        if isinstance(m, dict) and m.get("frequency") and m.get("text")
+    )
 
 
 def _inject_one(mission: Dict, missions_path: Path, now: datetime) -> str:
@@ -559,11 +587,7 @@ def _inject_one(mission: Dict, missions_path: Path, now: datetime) -> str:
     freq = mission["frequency"]
 
     # Build mission entry for missions.md
-    if freq == "every":
-        interval_display = mission.get("interval_display") or format_interval(mission.get("interval_seconds", 0))
-        tag = f"[every {interval_display}] "
-    else:
-        tag = f"[{freq}] "
+    tag = _injection_tag(mission)
     if project:
         entry = f"- [project:{project}] {tag}{text}"
     else:

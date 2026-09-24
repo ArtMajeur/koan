@@ -64,7 +64,7 @@ without rewriting YAML — handy for temporary debugging.
 | `/plan` completion | one outcome line from the **runner** carrying the issue/Jira URL or inline plan body (`✅ Plan created: <url>` / `✅ Plan generated inline:\n\n<body>`); the agent loop's bare `🧠 Planned` line is logged only | progress + verbose summary |
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
-| Recurring-mission success (title tagged `[daily]`/`[hourly]`/`[weekly]`/`[every …]` by the scheduler) | log only — scheduler-driven, not operator-requested per run; a real finding still reaches chat via the agent's own conclusion | sent with journal summary |
+| Recurring-mission success (title is a scheduler injection — `[daily]`/`[hourly]`/`[weekly]`/`[every …]` tag + text — of a mission registered in `recurring.json`) | log only — scheduler-driven, not operator-requested per run; a real finding still reaches chat via the agent's own conclusion. An operator one-off that merely starts with such a tag keeps its `Done:` line | sent with journal summary |
 | Idle-streak notice (`💤 No work available…`) | log only — any productive run (e.g. a recurring poll) re-arms it, so it would repeat every interval. The `⏸️ Auto-paused…` notice is still sent | sent |
 | Mission failure | sent (short form) | sent with failure context |
 | GitHub/Jira per-mention queue line | log only | sent |
@@ -124,7 +124,8 @@ the operator has explicitly chosen a level.
   agent prompt asks for a `[priority:info]` header on a conclusion when the run
   changed nothing, found nothing and needs no decision (e.g. an empty recurring
   poll). With the default `notifications.min_priority: action` it then lands in
-  the daily journal instead of chat.
+  the daily journal instead of chat — unformatted, since the outbox skips the LLM
+  formatter for any message below `min_priority`.
 
 - **`notifications.min_priority`** filters per-message *severity* (urgent/action/
   warning/info). `messaging.level` is a separate *verbosity tier* for lifecycle

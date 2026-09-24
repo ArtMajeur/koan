@@ -32,14 +32,30 @@ def test_normal_mode_operator_mission_success_is_one_line(monkeypatch):
     assert sent == ["✅ [proj] Done: fix the parser bug"]
 
 
-def test_normal_mode_recurring_mission_success_is_suppressed(monkeypatch):
+def test_normal_mode_recurring_mission_success_is_suppressed(monkeypatch, tmp_path):
     # A recurring injection is scheduler-driven, not operator-requested per
     # run — a "Done" line every interval would be noise.
+    from app.recurring import add_recurring_interval
+    add_recurring_interval(tmp_path / "recurring.json", 1800, "30m", "poll tickets")
     sent = []
     monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
     monkeypatch.setattr(koan_run, "is_debug", lambda: False)
-    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="[every 30m] poll tickets")
+    koan_run._notify_mission_end(
+        str(tmp_path), "proj", 1, 3, 0, mission_title="[every 30m] poll tickets",
+    )
     assert sent == []
+
+
+def test_normal_mode_unregistered_tagged_mission_success_is_shown(monkeypatch, tmp_path):
+    # An operator one-off that merely starts with a frequency tag is not a
+    # recurring injection — it keeps its completion line.
+    sent = []
+    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
+    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
+    koan_run._notify_mission_end(
+        str(tmp_path), "proj", 1, 3, 0, mission_title="[daily] write the release notes",
+    )
+    assert sent == ["✅ [proj] Done: [daily] write the release notes"]
 
 
 def test_debug_mode_recurring_mission_success_is_shown(monkeypatch):
