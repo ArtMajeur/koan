@@ -23,6 +23,7 @@ from app.recurring import (
     toggle_recurring,
     set_days,
     _matches_day,
+    is_recurring_mission,
     FREQUENCIES,
 )
 
@@ -443,6 +444,54 @@ class TestAddRecurringInterval:
         f = tmp_path / "recurring.json"
         m = add_recurring_interval(f, 300, "5m", "check health")
         assert m["project"] is None
+
+
+# --- is_recurring_mission ---
+
+
+class TestIsRecurringMission:
+    @pytest.mark.parametrize("title", [
+        "[daily] check emails",
+        "[hourly] sync inbox",
+        "[weekly] /report",
+        "[every 30m] /my_team.poll_tickets",
+        "[every 1h30m] check health",
+    ])
+    def test_recurring_tags_detected(self, title):
+        assert is_recurring_mission(title)
+
+    @pytest.mark.parametrize("title", [
+        "",
+        "fix the parser bug",
+        "/review https://github.com/o/r/pull/1",
+        "[project:web] fix the parser bug",
+        "check the [daily] report",
+        "[monthly] not a recurring frequency",
+    ])
+    def test_other_missions_not_detected(self, title):
+        assert not is_recurring_mission(title)
+
+    @pytest.mark.parametrize("add", [
+        lambda p: add_recurring(p, "daily", "check emails", project="web"),
+        lambda p: add_recurring_interval(p, 1800, "30m", "/my_team.poll_tickets",
+                                         project="web"),
+    ])
+    def test_injected_mission_title_is_detected(self, tmp_path, add):
+        """Round-trip: the title the agent loop picks from an injected mission
+        still carries the frequency tag, so the notifier can recognize it."""
+        from app.pick_mission import fallback_extract
+
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+        )
+        recurring_path = tmp_path / "recurring.json"
+        add(recurring_path)
+        check_and_inject(recurring_path, missions_path, datetime(2026, 2, 3, 8, 0))
+
+        project, title = fallback_extract(missions_path.read_text(), "web:/tmp/web")
+        assert project == "web"
+        assert is_recurring_mission(title)
 
 
 # --- is_due with every ---

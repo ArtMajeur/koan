@@ -7380,9 +7380,10 @@ class TestIdleTimeoutAutoPause:
 
         mock_create.assert_called_once_with(str(koan_root), "idle_timeout")
 
-        # Verify notifications
+        # Normal mode: the idle-streak notice is log-only, but the actionable
+        # auto-pause notice still reaches the human.
         notify_msgs = [str(c) for c in mock_notify.call_args_list]
-        assert any("No work available" in m for m in notify_msgs)
+        assert not any("No work available" in m for m in notify_msgs)
         assert any("Auto-paused" in m for m in notify_msgs)
 
     @patch("app.run.subprocess.run")
@@ -7431,7 +7432,7 @@ class TestIdleTimeoutAutoPause:
         self, mock_iteration, mock_release, mock_acquire,
         mock_startup, mock_subproc, koan_root,
     ):
-        """First idle iteration sends a notification to the human."""
+        """In debug mode, the first idle iteration sends a notification."""
         from app.run import main_loop
 
         os.environ["KOAN_ROOT"] = str(koan_root)
@@ -7451,13 +7452,56 @@ class TestIdleTimeoutAutoPause:
 
         mock_iteration.side_effect = iteration_side_effect
 
-        with patch("app.run._notify") as mock_notify:
+        with patch("app.run._notify") as mock_notify, \
+             patch("app.run.is_debug", return_value=True):
             main_loop()
 
         notify_msgs = [str(c) for c in mock_notify.call_args_list]
         assert any("No work available" in m for m in notify_msgs), (
             f"Expected idle notification on first idle, got: {notify_msgs}"
         )
+
+    @patch("app.run.subprocess.run")
+    @patch("app.run.run_startup", return_value=(5, 60, "koan/"))
+    @patch("app.run.acquire_pidfile")
+    @patch("app.run.release_pidfile")
+    @patch("app.run._run_iteration")
+    def test_first_idle_is_log_only_in_normal_mode(
+        self, mock_iteration, mock_release, mock_acquire,
+        mock_startup, mock_subproc, koan_root,
+    ):
+        """In normal mode, the idle notice is logged, not sent — a recurring
+        mission re-arms it after every run, so sending it is pure noise."""
+        from app.run import main_loop
+
+        os.environ["KOAN_ROOT"] = str(koan_root)
+        os.environ["KOAN_PROJECTS"] = f"test:{koan_root}"
+        (koan_root / ".koan-project").write_text("test")
+
+        call_count = [0]
+
+        def iteration_side_effect(**kwargs):
+            call_count[0] += 1
+            # idle, productive (recurring poll), idle again, then stop
+            if call_count[0] in (1, 3):
+                return "idle"
+            if call_count[0] == 2:
+                return True
+            (koan_root / ".koan-stop").touch()
+            (koan_root / ".koan-project").write_text("test")
+            return True
+
+        mock_iteration.side_effect = iteration_side_effect
+
+        with patch("app.run._notify") as mock_notify, \
+             patch("app.run.log") as mock_log, \
+             patch("app.run.is_debug", return_value=False):
+            main_loop()
+
+        assert not any("No work available" in str(c)
+                       for c in mock_notify.call_args_list)
+        assert any("No work available" in str(c)
+                   for c in mock_log.call_args_list)
 
     @patch("app.run.subprocess.run")
     @patch("app.run.run_startup", return_value=(5, 60, "koan/"))
@@ -7489,6 +7533,7 @@ class TestIdleTimeoutAutoPause:
         mock_iteration.side_effect = iteration_side_effect
 
         with patch("app.run._notify") as mock_notify, \
+             patch("app.run.is_debug", return_value=True), \
              patch("app.config.get_auto_pause", return_value=False):
             main_loop()
 
@@ -7609,6 +7654,7 @@ class TestIdleTimeoutAutoPause:
         mock_iteration.side_effect = iteration_side_effect
 
         with patch("app.run._notify") as mock_notify, \
+             patch("app.run.is_debug", return_value=True), \
              patch("app.schedule_manager.is_scheduled_active", return_value=True):
             main_loop()
 

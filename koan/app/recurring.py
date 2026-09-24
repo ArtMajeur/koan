@@ -539,6 +539,16 @@ def is_due(mission: Dict, now: Optional[datetime] = None) -> bool:
     return False
 
 
+# Matches the frequency tag _inject_one() puts at the start of an injected
+# mission ("[daily] …", "[every 30m] …"), after the project tag is stripped.
+_INJECTED_TAG_RE = re.compile(r"^\s*\[(?:hourly|daily|weekly|every [^\]]+)\]\s")
+
+
+def is_recurring_mission(mission_title: str) -> bool:
+    """True if the mission was injected by the recurring scheduler."""
+    return bool(_INJECTED_TAG_RE.match(mission_title or ""))
+
+
 def _inject_one(mission: Dict, missions_path: Path, now: datetime) -> str:
     """Inject a single mission into missions.md and update its last_run.
 

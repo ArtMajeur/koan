@@ -78,6 +78,22 @@ class TestNotifyMissionNormal:
             )
         assert mock_notify.call_args[0][1] == "✅ [proj] Done: improve docs"
 
+    def test_recurring_mission_success_is_logged_not_pushed(self):
+        with patch.object(run, "_notify") as mock_notify, \
+             patch("app.run_log.log_safe") as mock_log:
+            run._notify_mission_normal(
+                "/inst", "proj", 1, 60, 0, "[every 30m] /my_team.poll_tickets", "",
+            )
+        mock_notify.assert_not_called()
+        mock_log.assert_called_once()
+
+    def test_recurring_mission_failure_still_surfaces(self):
+        with patch.object(run, "_notify") as mock_notify:
+            run._notify_mission_normal(
+                "/inst", "proj", 1, 60, 1, "[daily] check emails", "",
+            )
+        assert mock_notify.call_args[0][1] == "❌ [proj] Failed: [daily] check emails"
+
 
 # ---------------------------------------------------------------------------
 # _notify_stagnation / _notify_stagnation_retry

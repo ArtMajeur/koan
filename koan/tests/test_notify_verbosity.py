@@ -32,6 +32,27 @@ def test_normal_mode_operator_mission_success_is_one_line(monkeypatch):
     assert sent == ["✅ [proj] Done: fix the parser bug"]
 
 
+def test_normal_mode_recurring_mission_success_is_suppressed(monkeypatch):
+    # A recurring injection is scheduler-driven, not operator-requested per
+    # run — a "Done" line every interval would be noise.
+    sent = []
+    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
+    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
+    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="[every 30m] poll tickets")
+    assert sent == []
+
+
+def test_debug_mode_recurring_mission_success_is_shown(monkeypatch):
+    sent = []
+    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg: sent.append(msg))
+    monkeypatch.setattr(koan_run, "is_debug", lambda: True)
+    monkeypatch.setattr(
+        "app.mission_summary.get_mission_summary", lambda *a, **k: "",
+    )
+    koan_run._notify_mission_end("/i", "proj", 1, 3, 0, mission_title="[daily] check emails")
+    assert sent and "[daily] check emails" in sent[0]
+
+
 def test_normal_mode_skill_success_prefers_threaded_pr_url(monkeypatch):
     # The PR URL captured during post-mission processing (pending.md already
     # deleted by then) is threaded in via pr_url and must win over a re-read.

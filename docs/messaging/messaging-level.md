@@ -4,7 +4,7 @@ title: "Messaging level (bridge verbosity)"
 description: "Explains the `messaging.level` setting (`normal`/`debug`) that controls how much lifecycle/progress chatter Kōan's Telegram/Slack bridge sends versus only logs."
 tags: [messaging]
 created: 2026-06-24
-updated: 2026-06-25
+updated: 2026-09-24
 ---
 
 # Messaging level (bridge verbosity)
@@ -64,6 +64,8 @@ without rewriting YAML — handy for temporary debugging.
 | `/plan` completion | one outcome line from the **runner** carrying the issue/Jira URL or inline plan body (`✅ Plan created: <url>` / `✅ Plan generated inline:\n\n<body>`); the agent loop's bare `🧠 Planned` line is logged only | progress + verbose summary |
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
+| Recurring-mission success (title tagged `[daily]`/`[hourly]`/`[weekly]`/`[every …]` by the scheduler) | log only — scheduler-driven, not operator-requested per run; a real finding still reaches chat via the agent's own conclusion | sent with journal summary |
+| Idle-streak notice (`💤 No work available…`) | log only — any productive run (e.g. a recurring poll) re-arms it, so it would repeat every interval. The `⏸️ Auto-paused…` notice is still sent | sent |
 | Mission failure | sent (short form) | sent with failure context |
 | GitHub/Jira per-mention queue line | log only | sent |
 | GitHub/Jira queued aggregate | `📬 GitHub: N new missions queued.` (when N > 0) | not emitted (per-mention lines already shown) |
@@ -116,6 +118,13 @@ set in `config.yaml`, Kōan sends a single advisory that the bridge defaults to
 the operator has explicitly chosen a level.
 
 ## Relationship to other settings
+
+- **Agent conclusions on no-op runs.** The agent's own `🏁` conclusion is agent
+  speech, not lifecycle chatter, so `messaging.level` does not gate it. Instead the
+  agent prompt asks for a `[priority:info]` header on a conclusion when the run
+  changed nothing, found nothing and needs no decision (e.g. an empty recurring
+  poll). With the default `notifications.min_priority: action` it then lands in
+  the daily journal instead of chat.
 
 - **`notifications.min_priority`** filters per-message *severity* (urgent/action/
   warning/info). `messaging.level` is a separate *verbosity tier* for lifecycle
