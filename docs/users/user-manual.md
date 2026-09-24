@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered walkthrough of Kōan, from first missions through REST/MCP skill discovery, parallel sessions, exploration, and configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-11
+updated: 2026-09-24
 ---
 
 # Kōan User Manual
@@ -867,7 +867,9 @@ After completion, Kōan posts a structured comment on the PR with these sections
 - **Usage:** `/check <pr-or-issue-url>`
 - **Aliases:** `/inspect`
 
-Kōan also **auto-forwards unresolved human review comments** on its open PRs. During the GitHub notification polling loop, `review_comment_dispatch` checks Kōan-created PRs for new review comments and creates missions to address the feedback — no explicit @mention required. Fingerprint-based deduplication (SHA-256 of sorted comment IDs) prevents re-dispatching the same set of comments. Bot comments are filtered out automatically.
+Kōan also **auto-forwards unresolved human review comments** on its open PRs. During the GitHub notification polling loop, `review_comment_dispatch` checks Kōan-created PRs — open PRs authored by Kōan's own GitHub user (`GITHUB_USER`, else the `gh` login) on its branch prefix — for new review comments and creates missions to address the feedback — no explicit @mention required. Fingerprint-based deduplication (SHA-256 of sorted comment IDs) prevents re-dispatching the same set of comments. Bot comments are filtered out automatically.
+
+Ownership is decided by author, not by branch name alone: in a fork, `gh` resolves to the upstream repo, where a maintainer or another Kōan instance may use the same `koan/` prefix. If Kōan's GitHub user cannot be resolved, both review and CI dispatch skip the project rather than guess.
 
 Configure this behavior in `config.yaml`:
 
@@ -2101,7 +2103,7 @@ When disabled, all CI-related automation is skipped: queue draining, CI dispatch
 
 ### CI Dispatch
 
-Kōan can automatically create fix missions when CI fails on its own PRs. When enabled, each iteration checks open Koan-authored PRs for failing check runs and inserts a fix mission with the failure log snippet. Dedup prevents re-dispatching the same failure. Only active when `ci_check.enabled` is true.
+Kōan can automatically create fix missions when CI fails on its own PRs. When enabled, each iteration checks open Koan-authored PRs (Kōan's own GitHub user + branch prefix) for failing check runs and inserts a fix mission with the failure log snippet. Dedup prevents re-dispatching the same failure. Only active when `ci_check.enabled` is true.
 
 ```yaml
 ci_dispatch:

@@ -125,33 +125,67 @@ class TestTrackerPersistence:
         assert loaded == data
 
 
-class TestFetchKoanOpenPrs:
-    """fetch_koan_open_prs filters by branch prefix."""
+def _fake_gh_pr_list(prs):
+    """Stand-in for `gh pr list` that honors --author like the real CLI."""
+    def _run_gh(*args, **kwargs):
+        author = args[args.index("--author") + 1] if "--author" in args else None
+        return json.dumps([p for p in prs if author is None or p["author"] == author])
+    return _run_gh
 
+
+class TestFetchKoanOpenPrs:
+    """fetch_koan_open_prs returns the bot's own PRs on its branch prefix."""
+
+    @patch("app.review_comment_dispatch.get_gh_username", return_value="koan-bot")
     @patch("app.review_comment_dispatch._get_branch_prefix", return_value="koan/")
     @patch("app.review_comment_dispatch.run_gh")
-    def test_filters_by_prefix(self, mock_gh, _):
+    def test_filters_by_prefix(self, mock_gh, _, __):
         from app.review_comment_dispatch import fetch_koan_open_prs
 
-        mock_gh.return_value = json.dumps([
-            {"number": 1, "title": "PR 1", "headRefName": "koan/fix-bug", "updatedAt": "2026-01-01"},
-            {"number": 2, "title": "PR 2", "headRefName": "main", "updatedAt": "2026-01-01"},
-            {"number": 3, "title": "PR 3", "headRefName": "koan/add-feature", "updatedAt": "2026-01-01"},
+        mock_gh.side_effect = _fake_gh_pr_list([
+            {"number": 1, "title": "PR 1", "headRefName": "koan/fix-bug", "author": "koan-bot"},
+            {"number": 2, "title": "PR 2", "headRefName": "main", "author": "koan-bot"},
+            {"number": 3, "title": "PR 3", "headRefName": "koan/add-feature", "author": "koan-bot"},
         ])
         prs = fetch_koan_open_prs("/project")
-        assert len(prs) == 2
         assert {p["number"] for p in prs} == {1, 3}
 
+    @patch("app.review_comment_dispatch.get_gh_username", return_value="koan-bot")
+    @patch("app.review_comment_dispatch._get_branch_prefix", return_value="koan/")
+    @patch("app.review_comment_dispatch.run_gh")
+    def test_excludes_prefix_branches_by_other_authors(self, mock_gh, _, __):
+        """In a fork, `gh` resolves to the upstream repo, where another Kōan
+        (or a maintainer) may use the same koan/ prefix — not ours."""
+        from app.review_comment_dispatch import fetch_koan_open_prs
+
+        mock_gh.side_effect = _fake_gh_pr_list([
+            {"number": 1, "title": "Ours", "headRefName": "koan/fix-bug", "author": "koan-bot"},
+            {"number": 2, "title": "Upstream's", "headRefName": "koan/docs", "author": "maintainer"},
+        ])
+        prs = fetch_koan_open_prs("/project")
+        assert [p["number"] for p in prs] == [1]
+
+    @patch("app.review_comment_dispatch.get_gh_username", return_value="")
+    @patch("app.review_comment_dispatch.run_gh")
+    def test_unknown_bot_user_fails_closed(self, mock_gh, _):
+        """Without a resolvable gh user we cannot tell our PRs apart."""
+        from app.review_comment_dispatch import fetch_koan_open_prs
+
+        assert fetch_koan_open_prs("/project") == []
+        mock_gh.assert_not_called()
+
+    @patch("app.review_comment_dispatch.get_gh_username", return_value="koan-bot")
     @patch("app.review_comment_dispatch._get_branch_prefix", return_value="koan/")
     @patch("app.review_comment_dispatch.run_gh", side_effect=RuntimeError("gh failed"))
-    def test_handles_gh_failure(self, _, __):
+    def test_handles_gh_failure(self, _, __, ___):
         from app.review_comment_dispatch import fetch_koan_open_prs
 
         assert fetch_koan_open_prs("/project") == []
 
+    @patch("app.review_comment_dispatch.get_gh_username", return_value="koan-bot")
     @patch("app.review_comment_dispatch._get_branch_prefix", return_value="koan/")
     @patch("app.review_comment_dispatch.run_gh", return_value="not-json")
-    def test_handles_malformed_json(self, _, __):
+    def test_handles_malformed_json(self, _, __, ___):
         from app.review_comment_dispatch import fetch_koan_open_prs
 
         assert fetch_koan_open_prs("/project") == []

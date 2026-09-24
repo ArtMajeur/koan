@@ -1,6 +1,6 @@
 """Auto-dispatch fix missions when CI fails on Koan-authored PRs.
 
-Checks open PRs authored by Koan (identified by branch prefix), fetches
+Checks open PRs authored by Koan (its ``gh`` user + branch prefix), fetches
 check-run status from GitHub, and inserts a fix mission when a CI run
 fails.  Dedup state persisted in ``instance/.ci-dispatch-tracker.json``
 keyed by ``{repo}#{pr}:{head_sha}:{job_name}`` to prevent re-dispatching
@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from app.github import run_gh
+from app.github import get_gh_username, run_gh
 
 log = logging.getLogger(__name__)
 
@@ -126,15 +126,26 @@ def _entry_ts(value) -> float:
 
 
 def fetch_koan_open_prs(project_path: str) -> List[dict]:
-    """Fetch open PRs whose branch starts with the configured prefix.
+    """Fetch the bot's own open PRs whose branch starts with the configured prefix.
+
+    The prefix alone does not identify ownership: in a fork, ``gh`` resolves
+    to the upstream repo, where a maintainer or another Kōan instance can use
+    the same ``koan/`` prefix. Filtering by the bot's ``gh`` user keeps us
+    from dispatching CI fixes on someone else's PR. Fails closed (``[]``)
+    when that user cannot be resolved.
 
     Returns list of dicts with number, title, headRefName, headRefOid.
     """
+    author = get_gh_username()
+    if not author:
+        log.warning("Cannot resolve the bot's GitHub user; skipping CI dispatch")
+        return []
     prefix = _get_branch_prefix()
     try:
         raw = run_gh(
             "pr", "list",
             "--state", "open",
+            "--author", author,
             "--limit", "30",
             "--json", "number,title,headRefName,headRefOid",
             cwd=project_path,

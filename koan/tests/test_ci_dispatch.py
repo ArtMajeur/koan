@@ -65,24 +65,53 @@ class TestComputeCiFingerprint:
         assert fp1 == fp2
 
 
+def _fake_gh_pr_list(prs):
+    """Stand-in for `gh pr list` that honors --author like the real CLI."""
+    def _run_gh(*args, **kwargs):
+        author = args[args.index("--author") + 1] if "--author" in args else None
+        return json.dumps([p for p in prs if author is None or p["author"] == author])
+    return _run_gh
+
+
 class TestFetchKoanOpenPrs:
+    @patch("app.ci_dispatch.get_gh_username", return_value="koan-bot")
     @patch("app.ci_dispatch.run_gh")
     @patch("app.ci_dispatch._get_branch_prefix", return_value="koan/")
-    def test_filters_by_prefix(self, _prefix, mock_gh):
-        mock_gh.return_value = json.dumps([
-            {"number": 1, "title": "Fix", "headRefName": "koan/fix-x", "headRefOid": "abc"},
-            {"number": 2, "title": "Other", "headRefName": "feature/y", "headRefOid": "def"},
+    def test_filters_by_prefix(self, _prefix, mock_gh, _user):
+        mock_gh.side_effect = _fake_gh_pr_list([
+            {"number": 1, "title": "Fix", "headRefName": "koan/fix-x", "headRefOid": "abc", "author": "koan-bot"},
+            {"number": 2, "title": "Other", "headRefName": "feature/y", "headRefOid": "def", "author": "koan-bot"},
         ])
         result = fetch_koan_open_prs("/project")
         assert len(result) == 1
         assert result[0]["number"] == 1
 
+    @patch("app.ci_dispatch.get_gh_username", return_value="koan-bot")
+    @patch("app.ci_dispatch.run_gh")
+    @patch("app.ci_dispatch._get_branch_prefix", return_value="koan/")
+    def test_excludes_prefix_branches_by_other_authors(self, _prefix, mock_gh, _user):
+        """In a fork, `gh` resolves to the upstream repo, where another Kōan
+        (or a maintainer) may use the same koan/ prefix — not ours."""
+        mock_gh.side_effect = _fake_gh_pr_list([
+            {"number": 1, "title": "Ours", "headRefName": "koan/fix-x", "headRefOid": "abc", "author": "koan-bot"},
+            {"number": 2, "title": "Upstream's", "headRefName": "koan/docs", "headRefOid": "def", "author": "maintainer"},
+        ])
+        assert [p["number"] for p in fetch_koan_open_prs("/project")] == [1]
+
+    @patch("app.ci_dispatch.get_gh_username", return_value="")
+    @patch("app.ci_dispatch.run_gh")
+    def test_unknown_bot_user_fails_closed(self, mock_gh, _user):
+        assert fetch_koan_open_prs("/project") == []
+        mock_gh.assert_not_called()
+
+    @patch("app.ci_dispatch.get_gh_username", return_value="koan-bot")
     @patch("app.ci_dispatch.run_gh", side_effect=RuntimeError("network"))
-    def test_returns_empty_on_error(self, _gh):
+    def test_returns_empty_on_error(self, _gh, _user):
         assert fetch_koan_open_prs("/project") == []
 
+    @patch("app.ci_dispatch.get_gh_username", return_value="koan-bot")
     @patch("app.ci_dispatch.run_gh", return_value="not json")
-    def test_returns_empty_on_bad_json(self, _gh):
+    def test_returns_empty_on_bad_json(self, _gh, _user):
         assert fetch_koan_open_prs("/project") == []
 
 

@@ -1,6 +1,6 @@
 """Auto-dispatch missions when human reviewers leave comments on Koan's PRs.
 
-Checks open PRs authored by Koan (identified by branch prefix), computes a
+Checks open PRs authored by Koan (its ``gh`` user + branch prefix), computes a
 fingerprint of current unresolved review comments, and inserts a mission when
 the fingerprint changes.  Dedup state persisted in
 ``instance/.review-dispatch-tracker.json``.
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from app.github import run_gh
+from app.github import get_gh_username, run_gh
 
 log = logging.getLogger(__name__)
 
@@ -76,15 +76,26 @@ def _get_bot_username() -> str:
 def fetch_koan_open_prs(
     project_path: str,
 ) -> List[dict]:
-    """Fetch open PRs whose branch starts with the configured prefix.
+    """Fetch the bot's own open PRs whose branch starts with the configured prefix.
+
+    The prefix alone does not identify ownership: in a fork, ``gh`` resolves
+    to the upstream repo, where a maintainer or another Kōan instance can use
+    the same ``koan/`` prefix. Filtering by the bot's ``gh`` user keeps us
+    from dispatching missions on someone else's PR. Fails closed (``[]``)
+    when that user cannot be resolved.
 
     Returns list of dicts: {number, title, headRefName, updatedAt}.
     """
+    author = get_gh_username()
+    if not author:
+        log.warning("Cannot resolve the bot's GitHub user; skipping review dispatch")
+        return []
     prefix = _get_branch_prefix()
     try:
         raw = run_gh(
             "pr", "list",
             "--state", "open",
+            "--author", author,
             "--limit", "30",
             "--json", "number,title,headRefName,updatedAt",
             cwd=project_path,
