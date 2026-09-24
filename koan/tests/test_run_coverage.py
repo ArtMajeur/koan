@@ -78,6 +78,52 @@ class TestNotifyMissionNormal:
             )
         assert mock_notify.call_args[0][1] == "✅ [proj] Done: improve docs"
 
+    def test_recurring_mission_success_is_logged_not_pushed(self, tmp_path):
+        from app.recurring import add_recurring_interval
+        add_recurring_interval(
+            tmp_path / "recurring.json", 1800, "30m", "/my_team.poll_tickets",
+        )
+        with patch.object(run, "_notify") as mock_notify, \
+             patch("app.run_log.log_safe") as mock_log:
+            run._notify_mission_normal(
+                str(tmp_path), "proj", 1, 60, 0, "[every 30m] /my_team.poll_tickets", "",
+            )
+        mock_notify.assert_not_called()
+        mock_log.assert_called_once()
+
+    def test_recurring_mission_failure_still_surfaces(self):
+        with patch.object(run, "_notify") as mock_notify:
+            run._notify_mission_normal(
+                "/inst", "proj", 1, 60, 1, "[daily] check emails", "",
+            )
+        assert mock_notify.call_args[0][1] == "❌ [proj] Failed: [daily] check emails"
+
+
+# ---------------------------------------------------------------------------
+# _notify_idle
+# ---------------------------------------------------------------------------
+
+class TestNotifyIdle:
+    def test_schedule_check_failure_is_logged(self):
+        # A broken schedule check must be visible, not silently read as "off".
+        with patch.object(run, "_notify") as mock_notify, \
+             patch.object(run, "log") as mock_log, \
+             patch.object(run, "is_debug", return_value=True), \
+             patch("app.schedule_manager.is_scheduled_active",
+                   side_effect=ValueError("bad schedule")):
+            run._notify_idle("/inst")
+        mock_log.assert_any_call(
+            "warning", "Schedule active check failed: bad schedule",
+        )
+        assert "Auto-pause in ~30 min" in mock_notify.call_args[0][1]
+
+    def test_active_schedule_message(self):
+        with patch.object(run, "_notify") as mock_notify, \
+             patch.object(run, "is_debug", return_value=True), \
+             patch("app.schedule_manager.is_scheduled_active", return_value=True):
+            run._notify_idle("/inst")
+        assert "schedule is active" in mock_notify.call_args[0][1]
+
 
 # ---------------------------------------------------------------------------
 # _notify_stagnation / _notify_stagnation_retry

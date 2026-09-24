@@ -111,6 +111,11 @@ def _get_min_priority() -> NotificationPriority:
     return NotificationPriority.ACTION
 
 
+def is_below_min_priority(priority: NotificationPriority) -> bool:
+    """True if send_telegram() would divert this priority to the journal."""
+    return priority.value < _get_min_priority().value
+
+
 def _write_suppressed_to_journal(text: str, priority: NotificationPriority):
     """Write a suppressed notification to the daily journal.
 
@@ -393,8 +398,7 @@ def send_telegram(text: str,
         False if sending failed.
     """
     # Check priority filter before sending
-    min_priority = _get_min_priority()
-    if priority.value < min_priority.value:
+    if is_below_min_priority(priority):
         _write_suppressed_to_journal(text, priority)
         return NOTIFICATION_SUPPRESSED
 

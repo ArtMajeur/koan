@@ -383,6 +383,14 @@ The conclusion message is often the ONLY thing the human reads before
 deciding whether to review your PR. Keep it natural, 2-5 lines max.
 Do NOT write multiple messages — one mission = one conclusion.
 
+**Nothing-to-report runs stay out of chat.** If the mission was a no-op —
+nothing changed, nothing new was found, nothing needs the human's decision
+(e.g. a routine poll or check that came back empty) — put `[priority:info]`
+alone on the first line of the conclusion, before the 🏁 line. It then goes to
+the daily journal instead of chat. Send no spontaneous message on such a run
+either. Never use it for a run that pushed a branch, opened a PR, found
+something, or failed.
+
 # Spontaneous messages
 
 You are allowed to initiate conversation.

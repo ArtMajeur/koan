@@ -1121,6 +1121,18 @@ def _notify_mission_normal(
         )
         return False
 
+    # Recurring injections are scheduler-driven, not operator-requested per
+    # run — a "Done" line every interval is pure noise. Any real finding
+    # reaches chat through the agent's own outbox conclusion.
+    from app.recurring import is_recurring_mission
+    if is_recurring_mission(title, Path(instance) / "recurring.json"):
+        from app.run_log import log_safe
+        log_safe(
+            "mission",
+            f"[{project_name}] Done: {title} (normal mode, recurring run suppressed)",
+        )
+        return False
+
     # A runner that reported gave its final URL (possibly none). Otherwise prefer
     # the URL captured during post-mission processing (before pending.md was
     # deleted); fall back to a best-effort re-read.
@@ -1129,6 +1141,29 @@ def _notify_mission_normal(
         url = pr_url if reported else (pr_url or _completion_pr_url(instance, project_name))
     _notify(instance, _completion_message(project_name, title, url, detail), verbatim=True)
     return True
+
+
+def _notify_idle(instance: str):
+    """Announce the start of an idle streak.
+
+    Status chatter, not an actionable event: any productive run (e.g. a
+    recurring poll every 30 min) re-arms it, so in normal mode it is logged
+    only. The auto-pause notice is what the human can act on.
+    """
+    schedule_active = False
+    with suppress_logged(log, "warning", "Schedule active check failed", Exception):
+        from app.schedule_manager import is_scheduled_active
+        schedule_active = is_scheduled_active()
+    if schedule_active:
+        msg = ("💤 No work available — but schedule is active, "
+               "staying awake for missions.")
+    else:
+        msg = ("💤 No work available — waiting for pending reviews "
+               "or new missions. Auto-pause in ~30 min.")
+    if is_debug():
+        _notify(instance, msg)
+    else:
+        log("koan", f"{msg} (normal mode, not sent)")
 
 
 def _notify_mission_end(
@@ -1791,23 +1826,7 @@ def main_loop():
                     consecutive_nonproductive = 0
                     if not idle_notified:
                         idle_notified = True
-                        try:
-                            from app.schedule_manager import is_scheduled_active
-                            schedule_active = is_scheduled_active()
-                        except (ImportError, Exception):
-                            schedule_active = False
-                        if schedule_active:
-                            _notify(
-                                instance,
-                                "💤 No work available — but schedule is active, "
-                                "staying awake for missions.",
-                            )
-                        else:
-                            _notify(
-                                instance,
-                                "💤 No work available — waiting for pending reviews "
-                                "or new missions. Auto-pause in ~30 min.",
-                            )
+                        _notify_idle(instance)
                     if consecutive_idle >= MAX_CONSECUTIVE_IDLE:
                         # Check if a schedule window is active — if so, the
                         # human configured deep_hours or work_hours and the

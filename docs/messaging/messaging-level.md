@@ -63,6 +63,8 @@ without rewriting YAML — handy for temporary debugging.
 | Tracked skill completion (`/review` `/ultrareview` `/fix` `/rebase` `/plan` `/implement` `/squash` `/recreate` `/debug` `/speckit`) | one message from the agent loop: `✅ [project] 🔍 Reviewed <url>`, with the runner's detail (gate note, plan body, warning) on the lines below | the runner's own message + the loop's message with run counter and journal summary |
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
+| Recurring-mission success (title is a scheduler injection — `[daily]`/`[hourly]`/`[weekly]`/`[every …]` tag + text — of a mission registered in `recurring.json`) | log only — scheduler-driven, not operator-requested per run; a real finding still reaches chat via the agent's own conclusion. An operator one-off that merely starts with such a tag keeps its `Done:` line | sent with journal summary |
+| Idle-streak notice (`💤 No work available…`) | log only — any productive run (e.g. a recurring poll) re-arms it, so it would repeat every interval. The `⏸️ Auto-paused…` notice is still sent | sent |
 | Mission failure | one message: `❌ [project] 🔍 Review failed: <pr-url>` + the reason on the next line (`❌ [project] Failed: <title>` for other missions) | same first line + run counter + failure context |
 | GitHub/Jira per-mention queue line | log only | sent |
 | GitHub/Jira queued aggregate | `📬 GitHub: N new missions queued.` (when N > 0) | not emitted (per-mention lines already shown) |
@@ -130,6 +132,14 @@ set in `config.yaml`, Kōan sends a single advisory that the bridge defaults to
 the operator has explicitly chosen a level.
 
 ## Relationship to other settings
+
+- **Agent conclusions on no-op runs.** The agent's own `🏁` conclusion is agent
+  speech, not lifecycle chatter, so `messaging.level` does not gate it. Instead the
+  agent prompt asks for a `[priority:info]` header on a conclusion when the run
+  changed nothing, found nothing and needs no decision (e.g. an empty recurring
+  poll). With the default `notifications.min_priority: action` it then lands in
+  the daily journal instead of chat — unformatted, since the outbox skips the LLM
+  formatter for any message below `min_priority`.
 
 - **`notifications.min_priority`** filters per-message *severity* (urgent/action/
   warning/info). `messaging.level` is a separate *verbosity tier* for lifecycle
