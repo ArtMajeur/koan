@@ -23,6 +23,7 @@ from app.recurring import (
     toggle_recurring,
     set_days,
     _matches_day,
+    is_recurring_mission,
     FREQUENCIES,
 )
 
@@ -443,6 +444,111 @@ class TestAddRecurringInterval:
         f = tmp_path / "recurring.json"
         m = add_recurring_interval(f, 300, "5m", "check health")
         assert m["project"] is None
+
+
+# --- is_recurring_mission ---
+
+
+class TestIsRecurringMission:
+    @pytest.fixture
+    def registry(self, tmp_path):
+        path = tmp_path / "recurring.json"
+        add_recurring(path, "daily", "check emails")
+        add_recurring(path, "hourly", "sync inbox")
+        add_recurring(path, "weekly", "/report")
+        add_recurring_interval(path, 1800, "30m", "/my_team.poll_tickets")
+        add_recurring_interval(path, 5400, "1h30m", "check health")
+        return path
+
+    @pytest.mark.parametrize("title", [
+        "[daily] check emails",
+        "[hourly] sync inbox",
+        "[weekly] /report",
+        "[every 30m] /my_team.poll_tickets",
+        "[every 1h30m] check health",
+        # Lifecycle markers the queue appends do not break the match.
+        "[daily] check emails ⏳(2026-02-03T08:00) [r:1]",
+    ])
+    def test_registered_injections_detected(self, registry, title):
+        assert is_recurring_mission(title, registry)
+
+    @pytest.mark.parametrize("title", [
+        "",
+        "fix the parser bug",
+        "/review https://github.com/o/r/pull/1",
+        "[project:web] fix the parser bug",
+        "check the [daily] report",
+        "[monthly] check emails",
+        # Operator one-offs that merely look like injections.
+        "[daily] write the release notes",
+        "[weekly] check emails",
+        "[every 5m] /my_team.poll_tickets",
+    ])
+    def test_other_missions_not_detected(self, registry, title):
+        assert not is_recurring_mission(title, registry)
+
+    def test_disabled_mission_still_detected(self, registry):
+        # force_run injects disabled missions too.
+        toggle_recurring(registry, "check emails", enabled=False)
+        assert is_recurring_mission("[daily] check emails", registry)
+
+    def test_missing_registry(self, tmp_path):
+        assert not is_recurring_mission("[daily] check emails", tmp_path / "nope.json")
+
+    @pytest.mark.parametrize("add", [
+        lambda p: add_recurring(p, "daily", "check emails", project="web"),
+        lambda p: add_recurring_interval(p, 1800, "30m", "/my_team.poll_tickets",
+                                         project="web"),
+    ])
+    def test_injected_mission_title_is_detected(self, tmp_path, add):
+        """Round-trip: the title the agent loop picks from an injected mission
+        matches its registry entry, so the notifier can recognize it."""
+        from app.pick_mission import fallback_extract
+
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+        )
+        recurring_path = tmp_path / "recurring.json"
+        add(recurring_path)
+        check_and_inject(recurring_path, missions_path, datetime(2026, 2, 3, 8, 0))
+
+        project, title = fallback_extract(missions_path.read_text(), "web:/tmp/web")
+        assert project == "web"
+        assert is_recurring_mission(title, recurring_path)
+
+    def test_parallel_picked_title_is_detected(self, tmp_path):
+        """Round-trip through pick_missions(), which (unlike fallback_extract)
+        keeps the [project:X] tag on the title of extra parallel sessions."""
+        from app.missions import pick_missions
+
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+        )
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring(recurring_path, "daily", "check emails", project="web")
+        check_and_inject(recurring_path, missions_path, datetime(2026, 2, 3, 8, 0))
+
+        [title] = pick_missions(missions_path.read_text(), n=1)
+        assert title.startswith("[project:web] ")
+        assert is_recurring_mission(title, recurring_path)
+
+    def test_multiline_text_is_detected(self, tmp_path):
+        """insert_mission() flattens newlines, so the picked title differs from
+        the stored text by whitespace only."""
+        from app.pick_mission import fallback_extract
+
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+        )
+        recurring_path = tmp_path / "recurring.json"
+        add_recurring_interval(recurring_path, 1800, "30m", "poll ci\nand report")
+        check_and_inject(recurring_path, missions_path, datetime(2026, 2, 3, 8, 0))
+
+        _, title = fallback_extract(missions_path.read_text(), "web:/tmp/web")
+        assert is_recurring_mission(title, recurring_path)
 
 
 # --- is_due with every ---

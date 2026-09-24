@@ -1153,8 +1153,9 @@ class TestOutboxPriorityParsing:
         assert mock_send.call_args[1]["priority"].name == "ACTION"
 
     @patch.object(OutboxManager, "_format_message")
+    @patch("app.outbox_manager.is_below_min_priority", return_value=False)
     @patch("app.outbox_manager.send_telegram", return_value=True)
-    def test_priority_header_stripped_before_format(self, mock_send, mock_fmt, tmp_path):
+    def test_priority_header_stripped_before_format(self, mock_send, mock_below, mock_fmt, tmp_path):
         """Priority header is stripped before content is passed to Claude formatter."""
         mock_fmt.return_value = "fmt"
         outbox = tmp_path / "outbox.md"
