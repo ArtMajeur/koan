@@ -570,6 +570,50 @@ If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebas
 - `/fix https://github.com/org/repo/pull/42 address the security concern` — PR URL redirects to `/rebase --fix`, preserving the trailing context
 </details>
 
+**`/handle`** — Carry a GitHub issue end to end: triage, plan, implementation, CI, review/fix loop, optional browser QA, then hand the PR to a human. Each step runs as its own mission (fresh context); `/handle` is the cheap tick that reads where the issue stands and queues the next step.
+
+- **Usage:** `/handle <issue-url>`
+- **GitHub @mention:** `@koan-bot handle` on an issue (to start, or to resume after answering a question)
+
+How it flows:
+
+1. **Triage** — Kōan assigns itself, reads the code the issue points to, and posts its assessment. If it is not a bug, or a human must answer something first, it pings the requester and stops.
+2. **Plan** — `/plan` on the issue. If the plan's *Open Questions* section is empty, implementation starts; otherwise the requester is pinged.
+3. **Implement** — `/implement` opens a draft PR, which joins the `## CI` queue (CI failures are fixed by `/ci_check` as usual).
+4. **Review/fix loop** — once CI is green, `/review`; blocking findings (critical or warning) trigger `/rebase --fix`, then CI and review again, at most `handle.max_review_rounds` times (default 3).
+5. **QA** (optional) — when the PR's preview deployment is up, the configured QA command runs against it.
+6. **Hand-off** — the PR leaves draft, the requester is asked to review it and pinged on the issue.
+
+The **requester** is whoever last commented `@koan-bot handle` on the issue (the issue author when started from chat). Every stop pings them; answering in the thread and commenting `@koan-bot handle` again resumes from the step that stopped. A `/handle` on a PR the pipeline opened resumes its issue.
+
+Optional `config.yaml` section:
+
+```yaml
+handle:
+  max_review_rounds: 3
+  product_team: my-product-team      # org team slug; its members get the product column
+  board:                             # organization Projects (v2) board; token needs `project` scope
+    owner: my-org
+    number: 1
+    status_field: Status
+    in_progress: In Progress
+    review: Tech review
+    product_review: Product review
+  qa:
+    command: /my_team.qa             # a QA skill taking the preview URL as first argument
+    preview_environment: review/pr-{pr}   # GitHub deployment environment of the PR preview
+    wait_minutes: 5                  # re-check interval while the preview deploys
+    max_wait_ticks: 5
+```
+
+<details>
+<summary>Use cases</summary>
+
+- `@koan-bot handle` on a bug report — triage, plan, fix, and a review-ready PR without re-invoking each step
+- `/handle https://github.com/org/repo/issues/42` — Same, started from chat
+- `@koan-bot handle` after answering the plan's open questions — re-plans with your answers and continues
+</details>
+
 **`/debug`** — Structured 4-step debugging when a previous fix attempt failed.
 
 - **Usage:** `/debug <issue-url> [additional context]`
@@ -1849,13 +1893,14 @@ exposure is independent of chat or GitHub/Jira availability.
 
 ### GitHub @mention Integration
 
-Ten skills can be triggered by commenting `@koan-bot <command>` on GitHub issues and PRs:
+Eleven skills can be triggered by commenting `@koan-bot <command>` on GitHub issues and PRs:
 
 | Skill | GitHub trigger |
 |-------|---------------|
 | `/brainstorm` | `@koan-bot /brainstorm <topic>` on an issue |
 | `/implement` | `@koan-bot /implement` on an issue |
 | `/fix` | `@koan-bot /fix` on an issue |
+| `/handle` | `@koan-bot handle` on an issue |
 | `/debug` | `@koan-bot /debug` on an issue |
 | `/review` | `@koan-bot /review` on a PR |
 | `/rebase` | `@koan-bot /rebase` on a PR |
@@ -2488,6 +2533,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
+| `/handle <issue>` | — | I | Issue → triage → plan → PR → CI/review loop → hand-off, stopping at human gates |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase --fix` |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
 | `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | I | Review one or more pull requests |

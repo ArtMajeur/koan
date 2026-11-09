@@ -119,6 +119,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "stagnation": _NESTED,
     "optimizations": _NESTED,
     "ci_check": _NESTED,
+    "handle": _NESTED,
     "running_indicator": _NESTED,
     "verification": _NESTED,
     "config_sync": _NESTED,
@@ -343,6 +344,13 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "timeout": "int",
         "max_fix_attempts_per_mission": "int",
         "idle_timeout": "int",
+    },
+    # /handle pipeline: review-round bound, optional board/team/QA wiring.
+    "handle": {
+        "max_review_rounds": "int",
+        "board": "dict",
+        "product_team": "str",
+        "qa": "dict",
     },
     # running_indicator also accepts a bare bool shorthand
     # (``running_indicator: true``); the dict form carries the sub-toggles.

@@ -2539,7 +2539,7 @@ def update_ci_item_attempt(content: str, pr_url: str) -> str:
 # /command https://github.com/... → ("command", "url")
 _GITHUB_ACTION_RE = re.compile(
     r"/(ask|audit|benchmark|brainstorm|check|check_need|ci_check"
-    r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request"
+    r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request|handle"
     r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile|question"
     r"|rb|rc|rebase|recreate|refactor|rereview|re_review|review|reviewrebase|rf|rr|rv|xp"
     r"|secu|security|security_audit|sq|squash"
@@ -2565,14 +2565,19 @@ def _extract_mission_signature(text: str) -> Optional[str]:
     return None
 
 
-def is_duplicate_mission(content: str, new_entry: str) -> bool:
+def is_duplicate_mission(
+    content: str, new_entry: str, *, pending_only: bool = False,
+) -> bool:
     """Check if a mission with the same action signature already exists.
 
-    Checks both Pending and In Progress sections.
+    Checks both Pending and In Progress sections, or Pending alone when
+    *pending_only* is set — used by a running mission that queues its own
+    follow-up, which the In Progress copy of itself would otherwise block.
 
     Args:
         content: Full missions.md content.
         new_entry: The mission entry about to be inserted.
+        pending_only: Ignore the In Progress section.
 
     Returns:
         True if a duplicate exists, False otherwise.
@@ -2582,7 +2587,9 @@ def is_duplicate_mission(content: str, new_entry: str) -> bool:
         return False
 
     sections = parse_sections(content)
-    existing = sections.get("pending", []) + sections.get("in_progress", [])
+    existing = list(sections.get("pending", []))
+    if not pending_only:
+        existing += sections.get("in_progress", [])
 
     for item in existing:
         item_sig = _extract_mission_signature(item)

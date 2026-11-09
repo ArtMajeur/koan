@@ -89,6 +89,7 @@ _CANONICAL_RUNNERS = {
     "security_audit": "skills.core.security_audit.security_audit_runner",
     "private_security_audit": "skills.core.private_security_audit.private_security_audit_runner",
     "ci_check": "app.ci_queue_runner",
+    "handle": "skills.core.handle.handle_runner",
     "doc": "skills.core.doc.doc_runner",
     "check_need": "skills.core.check_need.check_need_runner",
     "spec_audit": "skills.core.spec_audit.spec_audit_runner",
@@ -446,6 +447,9 @@ def build_skill_command(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
         "fix": lambda: _build_fix_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
+        "handle": lambda: _build_url_context_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
         "rebase": lambda: _build_rebase_cmd(base_cmd, args, project_path),
@@ -1161,6 +1165,12 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
     elif canonical == "check":
         if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
             return "/check requires a GitHub URL (PR or issue)"
+    elif canonical == "handle":
+        if not (_ISSUE_URL_RE.search(args) or _PR_URL_RE.search(args)):
+            return (
+                f"/{command} requires a GitHub issue URL "
+                f"(e.g. https://github.com/owner/repo/issues/42)"
+            )
     elif canonical == "check_need":
         if not (_PR_URL_RE.search(args) or _ISSUE_URL_RE.search(args)):
             return (
