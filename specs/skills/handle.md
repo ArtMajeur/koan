@@ -152,10 +152,12 @@ state) — it never asserts green from an earlier signal.
 | no review verdict for the PR head | re-run `/review` |
 | unexpected error (any exception in a tick) | `retry`: re-run the phase that errored |
 
-A gate other than an error reopens only once a human commented in the thread after it was
-posted (`gated_at`) — its answer, or the `@<bot> handle` itself. A poke queued while the
-tick that opened the gate was still running predates the question: it is ignored without a
-new comment, instead of redoing the step unanswered.
+A gate other than an error reopens only once a human (not a bot account) commented after
+it was posted (`gated_at`) — on the issue or on its PR, since CI and review gates are often
+answered there — with the answer, or the `@<bot> handle` itself. A poke queued while the
+tick that opened the gate was still running predates the question: it does not redo the
+step, and the bot replies that it is still waiting for an answer. A poke from chat
+resumes once someone has replied in either thread.
 
 ## Invariants
 

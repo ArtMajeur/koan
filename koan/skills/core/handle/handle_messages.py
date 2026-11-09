@@ -59,6 +59,10 @@ _TEMPLATES = {
         "stopped": "{pr_url} was {state} — I stop handling this issue.",
         "merged": "{pr_url} is merged — nothing left to do.",
         "busy": "Already on it — current step: {phase}.",
+        "gate_open": (
+            "{mention}I'm still waiting for a reply to the question above. Answer in this "
+            "thread or on the pull request, then comment `@{bot} handle`."
+        ),
         "error": (
             "{mention}I hit an error at step `{phase}`: {error}\n\n"
             "Comment `@{bot} handle` to retry that step."
@@ -123,6 +127,10 @@ _TEMPLATES = {
         "stopped": "{pr_url} a été {state} — j'arrête de traiter cette issue.",
         "merged": "{pr_url} est fusionnée — plus rien à faire.",
         "busy": "Déjà en cours — étape actuelle : {phase}.",
+        "gate_open": (
+            "{mention}J'attends encore une réponse à la question ci-dessus. Répondez dans ce "
+            "fil ou sur la pull request, puis commentez `@{bot} handle`."
+        ),
         "error": (
             "{mention}J'ai rencontré une erreur à l'étape `{phase}` : {error}\n\n"
             "Commentez `@{bot} handle` pour relancer cette étape."

@@ -794,7 +794,31 @@ class TestGateResume:
         posted = len(pipeline.github.posted)
         pipeline.run()
         assert pipeline.record()["phase"] == "waiting_human"
-        assert pipeline.pending() == [] and len(pipeline.github.posted) == posted
+        assert pipeline.pending() == []
+        assert len(pipeline.github.posted) == posted + 1
+        assert "still waiting for a reply" in pipeline.github.posted[-1]
+
+    def _gate_on_ci(self, pipeline):
+        pipeline.seed(phase="ci", pr_url=PR, pr_number="12", branch="b",
+                      ci_polls=0, ci_empty_checks=0, ci_outcome="failure")
+        pipeline.github.ci_state = "failure"
+        pipeline.run(after="ci")
+        assert pipeline.record()["resume"] == "ci"
+
+    def test_reply_on_the_pr_resumes_a_ci_gate(self, pipeline):
+        self._gate_on_ci(pipeline)
+        pipeline.github.ci_state = "success"
+        pipeline.github.pr_comments.append(
+            {"author": "dev", "body": f"Fixed the flaky test. @{BOT} handle", "created_at": time.time() + 5})
+        pipeline.run(url=PR)
+        assert pipeline.record()["phase"] == "reviewing"
+
+    def test_another_bots_comment_is_not_a_reply(self, pipeline):
+        self._gate_on_ci(pipeline)
+        pipeline.github.pr_comments.append(
+            {"author": "deploy-bot[bot]", "is_bot": True, "body": "Preview ready", "created_at": time.time() + 5})
+        pipeline.run()
+        assert pipeline.record()["phase"] == "waiting_human"
 
     def test_reply_after_the_gate_resumes(self, pipeline):
         self._gate_on_plan(pipeline)

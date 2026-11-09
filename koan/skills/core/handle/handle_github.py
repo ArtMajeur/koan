@@ -57,10 +57,10 @@ def fetch_issue(owner: str, repo: str, number: str) -> dict:
 
 
 def fetch_comments(owner: str, repo: str, number: str) -> List[dict]:
-    """Return every comment as ``{author, body, created_at}`` (epoch), oldest first."""
+    """Every comment as ``{author, is_bot, body, created_at}`` (epoch), oldest first."""
     raw = run_gh(
         "api", "--paginate", f"repos/{owner}/{repo}/issues/{number}/comments",
-        "--jq", ".[] | {author: .user.login, body, created_at}",
+        "--jq", '.[] | {author: .user.login, is_bot: (.user.type == "Bot"), body, created_at}',
     )
     comments = [json.loads(line) for line in raw.splitlines() if line.strip()]
     for comment in comments:

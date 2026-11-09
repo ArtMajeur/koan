@@ -554,18 +554,28 @@ def _resume(tick: Tick) -> Result:
     if not _replied_since_gate(tick):
         # A poke queued while the tick that opened this gate was running
         # predates its question: resuming would redo the step unanswered.
+        gh.post_comment(tick.owner, tick.repo, tick.number,
+                        render("gate_open", mention="", bot=tick.bot))
         return True, f"Gate still open on {tick.issue_url}: no reply since the question"
     return _RESUME[resume](tick)
 
 
 def _replied_since_gate(tick: Tick) -> bool:
-    """True when a human commented after the gate was posted (its answer, or the poke)."""
+    """True when a human commented after the gate — on the issue or on its PR.
+
+    The comment is the answer the gate asks for, or the `@<bot> handle` itself;
+    gates about CI or review are often answered on the PR.
+    """
     gated_at = tick.record.get("gated_at")
     if gated_at is None:
         return True
+    threads = list(tick.comments)
+    if tick.record.get("pr_number"):
+        threads += gh.fetch_comments(tick.owner, tick.repo, tick.pr_number)
     return any(
-        c.get("created_at", 0) > gated_at and not gh.same_login(c.get("author") or "", tick.bot)
-        for c in tick.comments
+        c.get("created_at", 0) > gated_at and not c.get("is_bot")
+        and not gh.same_login(c.get("author") or "", tick.bot)
+        for c in threads
     )
 
 
