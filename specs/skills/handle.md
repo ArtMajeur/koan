@@ -78,6 +78,20 @@ command), so every step gets a fresh model context and its own timeout and budge
   comment's `created_at`, the review sidecar's `timestamp`. Stale or missing output means
   the step failed → gate.
 
+## Timeouts
+
+- **Step missions** run under their own budgets (`skill_timeout`, `first_output_timeout`,
+  `ci_check.timeout`, `mission_timeout` for a prompt-only QA skill). A step killed by a
+  timeout is marked Failed and never retried, so the queued tick that follows it runs next
+  and finds no fresh output → gate (or, after QA, a hand-off that says QA left no report).
+- **Requeued or recovered steps** (quota, auth, stagnation, crash recovery) go back to the
+  **top** of Pending, ahead of their follow-up tick, so a tick never judges a step that
+  has not run yet.
+- **The tick itself** is short except for the triage, which streams provider events (one
+  stdout line each, keeping the skill liveness watchdog alive) under an `idle_timeout` of
+  `first_output_timeout - 60` seconds. A triage that fails or stalls gates on the requester
+  instead of leaving the issue parked in phase `triage`.
+
 ## Gates (stop and ping the requester)
 
 | Gate | Resume (next human `/handle`) |

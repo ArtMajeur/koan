@@ -47,6 +47,7 @@ _TEMPLATES = {
             "has no blocking finding.{qa_note}"
         ),
         "qa_ran": " Browser QA ran against the preview — see its comment.",
+        "qa_no_report": " Browser QA was queued but left no report (failed or timed out).",
         "qa_preview_failed": " Browser QA was skipped: the preview deployment failed.",
         "qa_preview_timeout": " Browser QA was skipped: the preview was not ready in time.",
         "stopped": "{pr_url} was {state} — I stop handling this issue.",
@@ -93,6 +94,7 @@ _TEMPLATES = {
             "revue n'a aucune remarque bloquante.{qa_note}"
         ),
         "qa_ran": " La QA navigateur a tourné sur la preview — voir son commentaire.",
+        "qa_no_report": " La QA navigateur a été lancée mais n'a laissé aucun rapport (échec ou timeout).",
         "qa_preview_failed": " QA navigateur non lancée : le déploiement de la preview a échoué.",
         "qa_preview_timeout": " QA navigateur non lancée : la preview n'était pas prête à temps.",
         "stopped": "{pr_url} a été {state} — j'arrête de traiter cette issue.",

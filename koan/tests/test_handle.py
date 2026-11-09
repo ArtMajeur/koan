@@ -51,6 +51,7 @@ class FakeGitHub:
 
     def install(self, stack_patch):
         gh = handle_runner.gh
+        self.pr_comments = []
         for name in ("fetch_issue", "fetch_comments", "post_comment", "assign_self",
                      "find_open_pr", "pr_info", "hand_off_pr", "preview_status",
                      "is_team_member", "move_on_board"):
@@ -60,7 +61,7 @@ class FakeGitHub:
         return dict(self.issue)
 
     def fetch_comments(self, owner, repo, number):
-        return list(self.comments)
+        return list(self.pr_comments if number == "12" else self.comments)
 
     def post_comment(self, owner, repo, number, body):
         self.posted.append(body)
@@ -110,7 +111,12 @@ def pipeline(tmp_path, monkeypatch):
         stack.enter_context(patch("app.config.get_handle_config", return_value=config))
         stack.enter_context(patch("app.config.get_branch_prefix", return_value="koan/"))
         stack.enter_context(patch("app.config.is_ci_check_enabled", return_value=True))
-        stack.enter_context(patch("app.provider.run_command", side_effect=lambda **_: triage["output"]))
+        def _fake_triage(**_):
+            if isinstance(triage["output"], Exception):
+                raise triage["output"]
+            return triage["output"]
+
+        stack.enter_context(patch("app.provider.run_command_streaming", side_effect=_fake_triage))
 
         class Pipeline:
             github = fake
@@ -299,6 +305,12 @@ class TestTriage:
         pipeline.run()
         assert token not in pipeline.github.posted[0]
 
+    def test_crashed_triage_still_pings_requester(self, pipeline):
+        pipeline.set_triage(RuntimeError("idle timeout"))
+        pipeline.run()
+        assert pipeline.record()["phase"] == "waiting_human"
+        assert "@dev" in pipeline.github.posted[0]
+
     def test_unparseable_triage_gates(self, pipeline):
         pipeline.set_triage("I could not decide.")
         pipeline.run()
@@ -442,10 +454,18 @@ class TestQa:
         assert pipeline.record()["phase"] == "done"
         assert "not ready" in pipeline.github.posted[0]
 
-    def test_after_qa_hands_off(self, pipeline):
-        pipeline.seed(phase="qa_running", pr_url=PR, pr_number="12")
+    def test_after_qa_hands_off_with_report(self, pipeline):
+        pipeline.seed(phase="qa_running", pr_url=PR, pr_number="12", phase_started_at=100.0)
+        pipeline.github.pr_comments = [{"author": BOT, "body": "QA report", "created_at": 200.0}]
         pipeline.run()
         assert pipeline.record()["phase"] == "done"
+        assert "see its comment" in pipeline.github.posted[0]
+
+    def test_timed_out_qa_is_reported_as_missing(self, pipeline):
+        pipeline.seed(phase="qa_running", pr_url=PR, pr_number="12", phase_started_at=100.0)
+        pipeline.run()
+        assert pipeline.record()["phase"] == "done"
+        assert "no report" in pipeline.github.posted[0]
 
 
 class TestEntryPoints:
@@ -477,3 +497,10 @@ class TestEntryPoints:
         ok, _ = pipeline.run(url="https://github.com/owner/repo/pull/99")
         assert not ok
         assert "handle" in pipeline.github.posted[0]
+
+
+class TestTriageTimeouts:
+    @pytest.mark.parametrize("outer,expected", [(600, 540), (60, 30), (0, None)])
+    def test_idle_bound_stays_under_outer_watchdog(self, outer, expected):
+        with patch("app.config.get_first_output_timeout", return_value=outer):
+            assert handle_runner._triage_idle_timeout() == expected

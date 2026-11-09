@@ -7,6 +7,7 @@ at a human gate. Heavy work always runs as its own mission. See
 """
 
 import argparse
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -135,7 +136,14 @@ def _start(tick: Tick) -> Result:
 
 
 def _triage(tick: Tick) -> Result:
-    verdict = _redacted(parse_triage(_run_triage(tick)))
+    try:
+        output = _run_triage(tick)
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        # A dead triage must still reach the requester, not leave the issue
+        # silently parked in phase "triage".
+        print(f"[handle] triage failed: {e}", file=sys.stderr)
+        output = ""
+    verdict = _redacted(parse_triage(output))
     if verdict is None:
         return _gate(tick, "triage_needs_human", "triage",
                      summary="The triage produced no usable verdict.", questions="")
@@ -169,7 +177,7 @@ def _redacted(verdict: Optional[dict]) -> Optional[dict]:
 def _run_triage(tick: Tick) -> str:
     from app.language_preference import get_language_instruction
     from app.prompts import load_skill_prompt
-    from app.provider import run_command
+    from app.provider import run_command_streaming
 
     comments = "\n\n".join(
         f"@{c['author']}: {c['body']}" for c in tick.comments if c.get("author") != tick.bot
@@ -180,10 +188,22 @@ def _run_triage(tick: Tick) -> str:
         TITLE=tick.issue.get("title", ""), BODY=tick.issue.get("body") or "",
         COMMENTS=comments or "(none)", LANGUAGE_INSTRUCTION=get_language_instruction(),
     )
-    return run_command(
+    # Streaming prints one line per provider event, which keeps the skill
+    # runner's liveness watchdog (first_output_timeout) from killing a long
+    # but healthy triage; idle_timeout ends a silent one before it does.
+    return run_command_streaming(
         prompt=prompt, project_path=tick.project_path, allowed_tools=_TRIAGE_TOOLS,
         model_key="mission", max_turns=30, timeout=1200, project_name=tick.project_name,
+        idle_timeout=_triage_idle_timeout(),
     )
+
+
+def _triage_idle_timeout() -> Optional[int]:
+    """Inactivity bound strictly below the outer skill liveness watchdog."""
+    from app.config import get_first_output_timeout
+
+    outer = get_first_output_timeout()
+    return max(30, outer - 60) if outer > 0 else None
 
 
 def _queue_plan(tick: Tick) -> Result:
@@ -319,6 +339,14 @@ def _wait_for_preview(tick: Tick) -> Result:
     return True, f"Preview not ready; next check at {run_at:%H:%M}"
 
 
+def _after_qa(tick: Tick) -> Result:
+    """Hand off; say whether the QA run left a report (it may have timed out)."""
+    comments = gh.fetch_comments(tick.owner, tick.repo, tick.record["pr_number"])
+    since = tick.record.get("phase_started_at", 0)
+    reported = gh.latest_bot_comment(comments, tick.bot, since) is not None
+    return _finish(tick, qa_note=render("qa_ran" if reported else "qa_no_report"))
+
+
 def _finish(tick: Tick, qa_note: str) -> Result:
     pr_url = tick.record["pr_url"]
     gh.hand_off_pr(tick.owner, tick.repo, tick.record["pr_number"], _reviewer(tick))
@@ -381,7 +409,7 @@ _PHASES: Dict[str, Callable[[Tick], Result]] = {
     "reviewing": _after_review,
     "fixing": _register_ci,
     "qa": _qa_or_finish,
-    "qa_running": lambda tick: _finish(tick, qa_note=render("qa_ran")),
+    "qa_running": lambda tick: _after_qa(tick),
     "waiting_human": _resume,
     "done": _report_busy,
     "stopped": _report_busy,
