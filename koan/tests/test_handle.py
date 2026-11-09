@@ -416,6 +416,16 @@ class TestRequester:
         pipeline.run()
         assert pipeline.record()["requester"] == "dev"
 
+    def test_quoted_instruction_is_not_a_mention(self, pipeline):
+        pipeline.seed(phase="waiting_human", resume="triage", requester="dev")
+        pipeline.github.comments.append({
+            "author": "lead", "created_at": time.time() + 10,
+            "body": f"> comment `@{BOT} handle` to resume\n\nThe currency is EUR.",
+        })
+        pipeline.set_triage(_triage_output("not_a_bug"))
+        pipeline.run()
+        assert pipeline.record()["requester"] == "dev"
+
     def test_external_issue_author_is_not_pinged(self, pipeline):
         pipeline.github.comments = []
         pipeline.set_triage(_triage_output("not_a_bug"))
@@ -542,6 +552,23 @@ class TestCi:
         assert pipeline.record()["phase"] == "ci"
         pipeline.run(after="ci-poll")
         assert pipeline.record()["phase"] == "reviewing"
+
+    def test_relay_during_the_recheck_wait_does_not_conclude_no_ci(self, pipeline):
+        self._seed_ci(pipeline)
+        pipeline.github.ci_state = "missing"
+        pipeline.run(after="ci")
+        pipeline.run(after="ci")  # the queue relays an older commit's outcome
+        assert pipeline.record()["phase"] == "ci"
+        assert pipeline.pending() == []
+        assert len(pipeline.events()) == 1
+
+    def test_relay_on_a_new_head_without_runs_schedules_a_recheck(self, pipeline):
+        self._seed_ci(pipeline, ci_empty_checks=1)  # the earlier re-check already fired
+        pipeline.github.ci_state = "missing"
+        pipeline.run(after="ci")
+        assert pipeline.record()["phase"] == "ci"
+        assert pipeline.pending() == []
+        assert len(pipeline.events()) == 1
 
     def test_poke_during_poll_starts_no_second_chain(self, pipeline):
         self._seed_ci(pipeline)
@@ -730,6 +757,22 @@ class TestQa:
         assert pipeline.record()["phase"] == "done"
         assert "not ready" in pipeline.github.posted[0]
 
+    def test_wait_budget_restarts_on_a_new_round(self, pipeline):
+        self._lgtm(pipeline)
+        pipeline.seed(qa_waits=2)  # spent by an earlier round's preview
+        pipeline.run(after="review")
+        assert (pipeline.record()["phase"], pipeline.record()["qa_waits"]) == ("qa", 1)
+
+    def test_preview_without_a_url_is_not_ready(self):
+        from skills.core.handle import handle_github
+        replies = iter([
+            json.dumps([{"id": 1, "sha": HEAD}]),
+            json.dumps([{"state": "success", "environment_url": ""}]),
+        ])
+        with patch.object(handle_github, "api", lambda *a, **k: next(replies)):
+            status = handle_github.preview_status("owner", "repo", "review/pr-12", (HEAD,))
+        assert status == ("pending", "")
+
     def test_after_qa_with_marked_report(self, pipeline):
         pipeline.seed(phase="qa_running", pr_url=PR, pr_number="12", branch="b", phase_started_at=100.0)
         pipeline.github.pr_comments = [
@@ -845,6 +888,21 @@ class TestAutoreviewGuard:
                 {"projects": {"proj": {}}}, None,
             )
         insert.assert_not_called()
+
+    def test_unreadable_handle_state_does_not_break_autoreview(self, tmp_path):
+        from app.mission_runner import _maybe_queue_autoreview
+
+        (tmp_path / handle_state.STATE_FILENAME).write_text("{not json")
+        with (
+            patch("app.utils.insert_pending_mission") as insert,
+            patch("app.session_tracker.detect_pr_created", return_value=True),
+            patch("app.projects_config.get_project_autoreview", return_value=True),
+        ):
+            _maybe_queue_autoreview(
+                str(tmp_path), "proj", f"/implement {ISSUE}", f"Created PR: {PR}",
+                {"projects": {"proj": {}}}, None,
+            )
+        assert insert.called
 
     @pytest.mark.parametrize("phase", ["done", "stopped", None])
     def test_finished_or_unknown_pipelines_do_not_block_autoreview(self, tmp_path, phase):

@@ -5,7 +5,6 @@ best-effort writes (assignment, board, team lookup) log and return False.
 """
 
 import json
-import re
 import sys
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple
@@ -89,13 +88,19 @@ def same_login(a: str, b: str) -> bool:
 
 
 def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:
-    """Author of the latest ``@<bot> handle`` comment newer than *since* ("" if none)."""
-    mention = re.compile(rf"@{re.escape(bot)}\s+/?handle\b", re.IGNORECASE)
+    """Author of the latest ``@<bot> handle`` comment newer than *since* ("" if none).
+
+    Parsed like every @mention command, so the instruction quoted from a gate
+    comment (`` `@<bot> handle` `` in a code span) is not a request.
+    """
+    from app.github_notifications import parse_mention_command
+
     for comment in reversed(comments):
         if comment.get("created_at", 0) <= since:
             break
         author = comment.get("author") or ""
-        if not same_login(author, bot) and mention.search(comment.get("body") or ""):
+        command = parse_mention_command(comment.get("body") or "", bot)
+        if command and command[0] == "handle" and not same_login(author, bot):
             return author
     return ""
 
@@ -211,8 +216,8 @@ def preview_status(
     """Return ``(status, url)`` of the PR's preview deployment.
 
     status is ``ready`` (latest deployment is for one of *accepted_shas* —
-    the PR head or its merge commit — and succeeded), ``failed``, or
-    ``pending`` (absent, outdated, or still deploying).
+    the PR head or its merge commit — and succeeded with an environment URL),
+    ``failed``, or ``pending`` (absent, outdated, still deploying, or no URL).
     """
     deployments = _json(api(
         f"repos/{owner}/{repo}/deployments?environment={quote(environment, safe='')}&per_page=1",
@@ -225,10 +230,15 @@ def preview_status(
     if not statuses:
         return "pending", ""
     state = statuses[0].get("state")
-    if state == "success":
-        return "ready", statuses[0].get("environment_url") or ""
+    url = statuses[0].get("environment_url") or ""
+    if state == "success" and url:
+        return "ready", url
     if state in ("failure", "error", "inactive"):
         return "failed", ""
+    if state == "success":
+        # QA takes the URL as its first argument: without one there is no
+        # preview to test, and the wait ends on its own bound.
+        _log(f"preview deployment for {environment} succeeded without an environment_url")
     return "pending", ""
 
 

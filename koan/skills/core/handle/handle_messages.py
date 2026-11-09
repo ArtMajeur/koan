@@ -33,8 +33,8 @@ _TEMPLATES = {
             "Comment `@{bot} handle` to try again."
         ),
         "ci_blocked": (
-            "{mention}CI on {pr_url} is {outcome} and my fixes ran out. "
-            "Take a look, then comment `@{bot} handle` to resume."
+            "{mention}CI on {pr_url} is stuck (`{outcome}`) and I can't get it further "
+            "on my own. Take a look, then comment `@{bot} handle` to resume."
         ),
         "review_exhausted": (
             "{mention}{pr_url} still has blocking review findings after {rounds} "
@@ -96,8 +96,8 @@ _TEMPLATES = {
             "Commentez `@{bot} handle` pour réessayer."
         ),
         "ci_blocked": (
-            "{mention}La CI de {pr_url} est en état {outcome} et mes corrections sont "
-            "épuisées. Jetez un œil, puis commentez `@{bot} handle` pour reprendre."
+            "{mention}La CI de {pr_url} est bloquée (`{outcome}`) et je ne peux pas aller "
+            "plus loin seul. Jetez un œil, puis commentez `@{bot} handle` pour reprendre."
         ),
         "review_exhausted": (
             "{mention}{pr_url} a encore des remarques bloquantes après {rounds} tours de "

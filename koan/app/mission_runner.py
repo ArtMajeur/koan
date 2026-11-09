@@ -1811,7 +1811,14 @@ def _maybe_queue_autoreview(
     # and a second one would push new heads under it (its review verdict then
     # no longer matches the PR head) and dedup its /review steps at random.
     from app.handle_state import tracks_mission
-    if tracks_mission(instance_dir, mission_title):
+    try:
+        handled = tracks_mission(instance_dir, mission_title)
+    except RuntimeError as e:
+        # Best-effort, like the ## CI relay: an unreadable /handle state must
+        # not break post-mission processing for every other mission.
+        _log_runner("error", f"Autoreview: /handle state unreadable, not skipping: {e}")
+        handled = False
+    if handled:
         _log_runner("info", f"Autoreview: skipped for {project_name} — /handle owns this PR")
         return
 

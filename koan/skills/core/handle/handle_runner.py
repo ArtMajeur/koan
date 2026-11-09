@@ -86,7 +86,6 @@ class Tick:
         )
 
 
-
 def _mention(login: str) -> str:
     return f"@{login}: " if login else ""
 
@@ -389,14 +388,9 @@ def _after_ci(tick: Tick) -> Result:
     if state == "success":
         return _queue_review(tick)
     if _recheck_pending(tick, "ci-poll"):
-        return _waiting(tick, "ci")  # a poke must not start a second poll chain
+        return _waiting(tick, "ci")  # a poke or a relay must not start a second poll chain
     if state in ("no_ci", "missing"):
-        # No run for the head after one re-check: no CI for this commit
-        # (path-filtered workflows, docs-only change), not a CI to wait for.
-        if tick.record.get("ci_empty_checks"):
-            return _queue_review(tick)
-        tick.save(ci_empty_checks=1)
-        return _poll_ci(tick, state)
+        return _confirm_no_ci(tick, state)
     ci_check = is_ci_check_enabled()
     if ci_check and (state == "pending" or (state == "failure" and _ci_fix_may_continue(tick))):
         handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.full_repo)
@@ -404,6 +398,20 @@ def _after_ci(tick: Tick) -> Result:
     if state == "pending":
         return _poll_ci(tick, state)
     return _gate(tick, "ci_blocked", "ci", pr_url=tick.pr_url, outcome=state)
+
+
+def _confirm_no_ci(tick: Tick, state: str) -> Result:
+    """No run for the head: re-check once after ``poll_minutes``, then review.
+
+    A path-filtered or docs-only commit never gets a run, but a run can also
+    take a moment to appear after a push.
+    """
+    # A relay about an older commit can land seconds after the push: only the
+    # scheduled re-check (or a poke, if it was lost) may conclude.
+    if tick.record.get("ci_empty_checks") and tick.after != "ci":
+        return _queue_review(tick)
+    tick.save(ci_empty_checks=1)
+    return _poll_ci(tick, state)
 
 
 def _ci_fix_may_continue(tick: Tick) -> bool:
@@ -484,7 +492,9 @@ def _qa_or_finish(tick: Tick) -> Result:
 
 def _wait_for_preview(tick: Tick) -> Result:
     qa = tick.config["qa"]
-    waits = tick.record.get("qa_waits", 0)
+    # The budget is per wait: a count left by an earlier round must not shorten
+    # (or skip) the wait for this head's preview.
+    waits = tick.record.get("qa_waits", 0) if tick.record.get("phase") == "qa" else 0
     if waits >= qa["max_wait_ticks"]:
         return _finish(tick, qa_note=render("qa_preview_timeout"))
     tick.save(phase="qa", qa_waits=waits + 1)
@@ -628,12 +638,12 @@ def _follow_up_pending(tick: Tick, phase: str) -> bool:
 
 
 def _recheck_pending(tick: Tick, after: str) -> bool:
-    """True when a human poke should wait: a re-check event is still scheduled.
+    """True when this tick should leave the decision to a scheduled re-check.
 
-    A chained tick is that re-check itself. A retry after an error, or a lost
-    event file, finds none and re-evaluates instead of answering "busy" forever.
+    The re-check tick itself decides. A retry after an error, or a lost event
+    file, finds none and re-evaluates instead of answering "busy" forever.
     """
-    if tick.chained:
+    if tick.after == after:
         return False
     wanted = handle_state.handle_entry(tick.project_name, tick.issue_url, after)
     for path in (Path(tick.instance_dir) / "events").glob("*.json"):

@@ -4,7 +4,7 @@ title: "GitHub Notification-Driven Commands"
 description: "Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-07-13
+updated: 2026-11-09
 ---
 
 # GitHub Notification-Driven Commands
@@ -70,7 +70,7 @@ Kōan will:
 
 ## Available Commands
 
-Any skill with `github_enabled: true` in its `SKILL.md` can be triggered via @mentions. Currently **16 commands** are available:
+Any skill with `github_enabled: true` in its `SKILL.md` can be triggered via @mentions. Currently **17 commands** are available:
 
 | Command | Aliases | What it does | Context-aware |
 |---------|---------|--------------|---------------|
@@ -80,6 +80,7 @@ Any skill with `github_enabled: true` in its `SKILL.md` can be triggered via @me
 | `deepplan` | `deeplan` | Spec-first design with Socratic exploration | **Yes** |
 | `fix` | — | Fix a GitHub issue end-to-end, or batch-queue all open issues | **Yes** |
 | `gh_request` | — | Natural-language GitHub request dispatch | **Yes** |
+| `handle` | — | Carry an issue from triage to a review-ready PR, stopping at human gates | No |
 | `implement` | `impl` | Implement a GitHub issue | **Yes** |
 | `plan` | — | Deep-think and create a structured plan | **Yes** |
 | `profile` | `perf`, `benchmark` | Queue a performance profiling mission | **Yes** |

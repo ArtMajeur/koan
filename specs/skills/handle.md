@@ -48,7 +48,7 @@ after an error, a lost event file) it re-evaluates the phase.
 | `ci` | PR known | decide from the **PR head's own runs** (below) |
 | `reviewing` | head CI green, or no CI | after `/review --force`: the review sidecar's `lgtm` for the **PR head** |
 | `fixing` | review blocking, rounds left | after `/rebase --fix` → `ci` |
-| `qa` | review lgtm, QA configured | preview deployment for the PR head (or its merge commit) ready → queue the QA command; else re-check later |
+| `qa` | review lgtm, QA configured | preview deployment for the PR head (or its merge commit) ready, with an `environment_url` → queue the QA command; else re-check later, at most `max_wait_ticks` times per wait |
 | `qa_running` | QA queued | hand off, saying whether a QA report (marked comment) was posted |
 | `done` | hand-off made | a poke: open PR → new fix round; merged → `stopped`; closed → restart from triage |
 | `waiting_human` | any gate or error | a poke resumes the blocked step (`retry` re-runs the phase that errored) |
@@ -63,7 +63,7 @@ therefore re-reads the branch runs, keeps those of the PR head, and decides:
 | Head state | Action |
 |---|---|
 | success | `/review` |
-| no run for the head (none on the branch, or only older commits') | re-check once after `poll_minutes`, then `/review` as "no CI" — a path-filtered or docs-only commit has none |
+| no run for the head (none on the branch, or only older commits') | re-check once after `poll_minutes`, then `/review` as "no CI" — a path-filtered or docs-only commit has none. Only that re-check (or a poke, if it was lost) concludes: a CI relay that finds no run for the head waits for it, scheduling one if none is left |
 | pending, `ci_check` enabled | register in `## CI` (without resetting an existing entry); the relay wakes the tick |
 | pending without `ci_check` | re-check after `poll_minutes`, at most `max_polls` times, then gate |
 | failure still owned by `/ci_check` (in `## CI`, or no exhausted outcome relayed) | register and wait |
@@ -93,12 +93,17 @@ state) — it never asserts green from an earlier signal.
   are one-shot events (`instance/events/`) queuing `/handle <issue> after:ci-poll|qa-wait`.
 - **GitHub:** issue comments (triage, gates, errors, hand-off), self-assignment, PR marked
   ready, review requested from the requester, optional board column moves.
+- **Chat:** at the normal messaging level a chained tick that succeeds is logged only (no
+  `Done:` line per tick); a failed tick, a human `/handle` and every step mission still
+  report as usual. See `docs/messaging/messaging-level.md`.
 
 ## Requester
 
 - Set by a **human poke** only: the author of the latest `@<bot> handle` (or
   `@<bot> /handle`) comment **newer than the previous tick**, if authorized by the same
   rule as GitHub @mention commands (`github.authorized_users`, write access for `*`).
+  The comment is parsed like any @mention command (`parse_mention_command`), so the
+  instruction quoted from a gate comment in a code span is not a request.
   Persisted in the record. A poke from chat finds no newer mention and keeps the stored
   requester rather than handing the pipeline to an earlier commenter.
 - Chained ticks never change it, so a drive-by mention mid-pipeline cannot take over the
@@ -192,7 +197,12 @@ resumes once someone has replied in either thread.
 
 - **Handler:** `handler.py` queues `/handle <url>` for an issue or PR URL (Telegram, dashboard).
 - **Runner:** `skills.core.handle.handle_runner`, registered in `_SKILL_RUNNERS`.
-- **GitHub/Jira:** `github_enabled: true`, `github_context_aware: true`; GitHub only.
+- **GitHub/Jira:** `github_enabled: true`, GitHub only (a Jira mention queues a mission
+  that fails URL validation). `github_context_aware: false`: the tick reads the thread
+  itself, so the mention's text stays out of the queue and a comment cannot carry an
+  `after:` tag.
+- **Autoreview guard:** best-effort — an unreadable state file is logged and autoreview
+  proceeds, like the CI relay.
 - **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`.
 - **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue an
   active `/handle` pipeline tracks (`handle_state.tracks_mission`): a second review/fix
