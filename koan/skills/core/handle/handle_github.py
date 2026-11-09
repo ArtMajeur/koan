@@ -125,17 +125,26 @@ def assign_self(owner: str, repo: str, number: str) -> bool:
 # -- pull request ---------------------------------------------------------
 
 
-def find_open_pr(owner: str, repo: str, branch: str) -> Optional[dict]:
-    """Open PR whose head is *branch*: ``{url, number, headRefOid, updated_at}`` (epoch)."""
+def find_open_pr(owner: str, repo: str, branch: str, bot: str) -> Optional[dict]:
+    """The bot's own open PR on *branch*: ``{url, number, headRefOid, updated_at}``.
+
+    ``--head`` matches the branch *name* only, so a fork could open a PR from a
+    same-named branch; only a PR the bot authored from the base repository
+    is adopted (it is then reviewed and fixed autonomously).
+    """
     prs = _json(run_gh(
-        "pr", "list", "--repo", f"{owner}/{repo}", "--head", branch,
-        "--state", "open", "--json", "url,number,headRefOid,updatedAt",
+        "pr", "list", "--repo", f"{owner}/{repo}", "--head", branch, "--state", "open",
+        "--json", "url,number,headRefOid,updatedAt,author,headRepositoryOwner",
     )) or []
-    if not prs:
-        return None
-    pr = prs[0]
-    pr["updated_at"] = _epoch(pr.pop("updatedAt"))
-    return pr
+    for pr in prs:
+        author = ((pr.get("author") or {}).get("login") or "").lower()
+        head_owner = ((pr.get("headRepositoryOwner") or {}).get("login") or "").lower()
+        if author == bot.lower() and head_owner == owner.lower():
+            return {
+                "url": pr["url"], "number": pr["number"], "headRefOid": pr["headRefOid"],
+                "updated_at": _epoch(pr["updatedAt"]),
+            }
+    return None
 
 
 def pr_info(owner: str, repo: str, number: str) -> dict:

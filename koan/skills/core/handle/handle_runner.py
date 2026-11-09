@@ -327,7 +327,7 @@ def _after_implement(tick: Tick) -> Result:
     from app.config import get_branch_prefix
 
     branch = f"{get_branch_prefix()}implement-{tick.number}"
-    pr = gh.find_open_pr(tick.owner, tick.repo, branch)
+    pr = gh.find_open_pr(tick.owner, tick.repo, branch, tick.bot)
     # A PR left by an earlier attempt does not prove this /implement worked.
     if pr is None or pr["updated_at"] < tick.record.get("phase_started_at", 0):
         return _gate(tick, "implement_no_pr", "implement")

@@ -85,7 +85,7 @@ class FakeGitHub:
         self.assigned = True
         return True
 
-    def find_open_pr(self, owner, repo, branch):
+    def find_open_pr(self, owner, repo, branch, bot):
         return self.open_pr
 
     def pr_info(self, owner, repo, number):
@@ -732,6 +732,26 @@ class TestEntryPoints:
         ok, _ = pipeline.run(url="https://github.com/owner/repo/pull/99")
         assert not ok
         assert "handle" in pipeline.github.posted[0]
+
+
+class TestFindOpenPr:
+    def _listing(self, author, head_owner):
+        return json.dumps([{
+            "url": PR, "number": 12, "headRefOid": HEAD, "updatedAt": "2026-11-09T10:00:00Z",
+            "author": {"login": author}, "headRepositoryOwner": {"login": head_owner},
+        }])
+
+    @pytest.mark.parametrize("author,head_owner", [("mallory", "owner"), (BOT, "mallory")])
+    def test_foreign_pr_on_same_branch_name_is_not_adopted(self, author, head_owner):
+        from skills.core.handle import handle_github
+        with patch.object(handle_github, "run_gh", return_value=self._listing(author, head_owner)):
+            assert handle_github.find_open_pr("owner", "repo", "koan/implement-7", BOT) is None
+
+    def test_bot_pr_from_base_repo_is_adopted(self):
+        from skills.core.handle import handle_github
+        with patch.object(handle_github, "run_gh", return_value=self._listing(BOT.upper(), "OWNER")):
+            pr = handle_github.find_open_pr("owner", "repo", "koan/implement-7", BOT)
+        assert pr["url"] == PR and pr["updated_at"] > 0
 
 
 class TestTriageTimeouts:
