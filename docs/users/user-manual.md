@@ -611,6 +611,17 @@ handle:
     max_wait_ticks: 5
 ```
 
+QA needs a preview deployment, which only some repositories have. `handle.qa` can therefore be set per project in `projects.yaml` (under a project, or under `defaults`), where it overrides the global one key by key. To run QA on one project only, leave `qa` out of `config.yaml` and put it on that project; the others hand the PR off right after the review, without waiting for a preview:
+
+```yaml
+projects:
+  my-shop:
+    handle:
+      qa:
+        command: /my_team.qa
+        preview_environment: review/pr-{pr}
+```
+
 <details>
 <summary>Use cases</summary>
 
