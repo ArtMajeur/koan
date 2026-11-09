@@ -238,6 +238,8 @@ def _dispatch(tick: Tick) -> Result:
         state = _pr(tick)["state"]
         if state in _TERMINAL_PR_STATES:
             return _stop(tick, state.lower())
+    if _issue_closed(tick):
+        return _stop_on_closed_issue(tick)
     return _PHASES.get(phase, _start)(tick)
 
 
@@ -545,6 +547,8 @@ def _reenter(tick: Tick) -> Result:
         tick.comment("merged", pr_url=tick.pr_url)
         tick.save(phase="stopped")
         return True, f"{tick.pr_url} already merged"
+    if _issue_closed(tick):
+        return _stop_on_closed_issue(tick)
     if state == "CLOSED":
         keep = {"requester": tick.requester} if tick.requester else {}
         handle_state.reset_record(tick.instance_dir, tick.issue_url, **keep)
@@ -574,7 +578,8 @@ def _replied_since_gate(tick: Tick) -> bool:
     """True when a human commented after the gate — on the issue or on its PR.
 
     The comment is the answer the gate asks for, or the `@<bot> handle` itself;
-    gates about CI or review are often answered on the PR.
+    gates about CI or review are often answered on the PR, as a comment, an
+    inline review comment or a review.
     """
     gated_at = tick.record.get("gated_at")
     if gated_at is None:
@@ -582,6 +587,7 @@ def _replied_since_gate(tick: Tick) -> bool:
     threads = list(tick.comments)
     if tick.record.get("pr_number"):
         threads += gh.fetch_comments(tick.owner, tick.repo, tick.pr_number)
+        threads += gh.fetch_review_activity(tick.owner, tick.repo, tick.pr_number)
     return any(
         c.get("created_at", 0) > gated_at and not c.get("is_bot")
         and not gh.same_login(c.get("author") or "", tick.bot)
@@ -593,6 +599,17 @@ def _stop(tick: Tick, state: str) -> Result:
     tick.comment("stopped", pr_url=tick.pr_url, state=render(f"state_{state}"))
     tick.save(phase="stopped", resume=None)
     return True, f"{tick.pr_url} {state}; pipeline stopped"
+
+
+def _issue_closed(tick: Tick) -> bool:
+    return tick.issue.get("state") == "closed"
+
+
+def _stop_on_closed_issue(tick: Tick) -> Result:
+    """Closing the issue is how a human calls the pipeline off."""
+    tick.comment("issue_closed")
+    tick.save(phase="stopped", resume=None)
+    return True, f"{tick.issue_url} is closed; pipeline stopped"
 
 
 def _queue(tick: Tick, command: str, after: str, phase: str) -> Result:

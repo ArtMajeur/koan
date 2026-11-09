@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered walkthrough of Kōan, from first missions through REST/MCP skill discovery, parallel sessions, exploration, and configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-17
+updated: 2026-11-09
 ---
 
 # Kōan User Manual
@@ -584,7 +584,7 @@ How it flows:
 5. **QA** (optional) — when the PR's preview deployment is up, the configured QA command runs against it.
 6. **Hand-off** — the PR leaves draft, the requester is asked to review it and pinged on the issue.
 
-The **requester** is whoever last commented `@koan-bot handle` on the issue, if they are allowed to command the bot (`github.authorized_users`); it is stored, so a later comment from someone else does not take over. Started from chat, it is the issue author when allowed, otherwise nobody is mentioned. Every stop — including an unexpected error — pings the requester; answering in the thread and commenting `@koan-bot handle` again resumes from the step that stopped (a stop only reopens once someone has replied after it, on the issue or on the PR). Autoreview is skipped for PRs a `/handle` pipeline drives, since the pipeline runs its own review/fix loop. A `/handle` on a PR the pipeline opened resumes its issue. Once the PR is handed off, `@koan-bot handle` starts a new fix round from the latest review; on a closed PR it starts over from triage.
+The **requester** is whoever last commented `@koan-bot handle` on the issue, if they are allowed to command the bot (`github.authorized_users`); it is stored, so a later comment from someone else does not take over. Started from chat, it is the issue author when allowed, otherwise nobody is mentioned. Every stop — including an unexpected error — pings the requester; answering in the thread and commenting `@koan-bot handle` again resumes from the step that stopped (a stop only reopens once someone has replied after it, on the issue or on the PR). Autoreview is skipped for PRs a `/handle` pipeline drives, since the pipeline runs its own review/fix loop. A `/handle` on a PR the pipeline opened resumes its issue. Once the PR is handed off, `@koan-bot handle` starts a new fix round from the latest review; on a closed PR it starts over from triage. **Closing the issue calls the pipeline off** (a step already queued still runs); reopen it and comment `@koan-bot handle` to pick it up again. In chat, each step reports its own outcome; the ticks between steps are logged only.
 
 CI is judged on the PR's latest commit only, and the hand-off says what it found ("CI is green", or that no CI ran).
 

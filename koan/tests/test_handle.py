@@ -51,6 +51,7 @@ class FakeGitHub:
                       "author": "reporter", "node_id": "I_1", "html_url": ISSUE, "is_pr": False}
         self.comments = [{"author": "dev", "body": f"@{BOT} handle", "created_at": 1.0}]
         self.pr_comments = []
+        self.pr_reviews = []
         self.authorized = {"dev", "lead"}
         self.posted = []
         self.open_pr = None
@@ -64,7 +65,8 @@ class FakeGitHub:
 
     def install(self, enter):
         gh = handle_runner.gh
-        for name in ("fetch_issue", "fetch_comments", "post_comment", "assign_self",
+        for name in ("fetch_issue", "fetch_comments", "fetch_review_activity",
+                     "post_comment", "assign_self",
                      "find_open_pr", "pr_info", "hand_off_pr", "preview_status",
                      "merge_commit_sha", "is_team_member", "move_on_board", "is_authorized"):
             enter(patch.object(gh, name, getattr(self, name)))
@@ -77,6 +79,9 @@ class FakeGitHub:
         if self.fail_comments_with:
             raise self.fail_comments_with
         return list(self.pr_comments if number == "12" else self.comments)
+
+    def fetch_review_activity(self, owner, repo, number):
+        return list(self.pr_reviews)
 
     def post_comment(self, owner, repo, number, body):
         self.posted.append(body)
@@ -856,6 +861,13 @@ class TestGateResume:
         pipeline.run(url=PR)
         assert pipeline.record()["phase"] == "reviewing"
 
+    def test_pr_review_resumes_a_ci_gate(self, pipeline):
+        self._gate_on_ci(pipeline)
+        pipeline.github.ci_state = "success"
+        pipeline.github.pr_reviews.append({"author": "dev", "created_at": time.time() + 5})
+        pipeline.run(url=PR)
+        assert pipeline.record()["phase"] == "reviewing"
+
     def test_another_bots_comment_is_not_a_reply(self, pipeline):
         self._gate_on_ci(pipeline)
         pipeline.github.pr_comments.append(
@@ -909,6 +921,48 @@ class TestAutoreviewGuard:
         if phase:
             handle_state.update_record(str(tmp_path), ISSUE, phase=phase)
         assert handle_state.tracks_mission(str(tmp_path), f"/implement {ISSUE}") is False
+
+
+class TestClosedIssue:
+    def _close(self, pipeline):
+        pipeline.github.issue["state"] = "closed"
+
+    def test_chained_tick_stops_the_pipeline(self, pipeline):
+        pipeline.seed(phase="planning", phase_started_at=100.0)
+        pipeline.github.comments.append(_plan_comment("None.", 200.0))
+        self._close(pipeline)
+        pipeline.run(after="plan")
+        assert pipeline.record()["phase"] == "stopped"
+        assert pipeline.pending() == []
+        assert "is closed" in pipeline.github.posted[0]
+
+    def test_handle_on_a_closed_issue_does_not_start(self, pipeline):
+        self._close(pipeline)
+        pipeline.run()
+        assert pipeline.pending() == [] and not pipeline.github.assigned
+        assert "Reopen" in pipeline.github.posted[0]
+
+    def test_poke_on_a_stopped_pipeline_does_not_restart_while_closed(self, pipeline):
+        pipeline.seed(phase="stopped")
+        self._close(pipeline)
+        pipeline.run()
+        assert pipeline.record()["phase"] == "stopped"
+        assert pipeline.pending() == [] and not pipeline.github.assigned
+
+    def test_merged_pr_is_reported_as_merged(self, pipeline):
+        # Merging usually closes the issue too: the PR's fate is the news.
+        pipeline.seed(phase="ci", pr_url=PR, pr_number="12", branch="b")
+        pipeline.github.pr_state = "MERGED"
+        self._close(pipeline)
+        pipeline.run(after="ci")
+        assert "was merged" in pipeline.github.posted[0]
+
+    def test_poke_after_a_merge_says_merged(self, pipeline):
+        pipeline.seed(phase="done", pr_url=PR, pr_number="12", branch="b")
+        pipeline.github.pr_state = "MERGED"
+        self._close(pipeline)
+        pipeline.run()
+        assert "is merged" in pipeline.github.posted[0]
 
 
 class TestReentry:

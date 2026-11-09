@@ -67,6 +67,24 @@ def fetch_comments(owner: str, repo: str, number: str) -> List[dict]:
     return comments
 
 
+def fetch_review_activity(owner: str, repo: str, number: str) -> List[dict]:
+    """A PR's inline review comments and submitted reviews: ``{author, is_bot, created_at}``.
+
+    They live outside the comment thread ``fetch_comments`` reads.
+    """
+    activity = []
+    for path, stamp in (("comments", "created_at"), ("reviews", "submitted_at")):
+        raw = run_gh(
+            "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/{path}",
+            "--jq", f".[] | select(.{stamp} != null) | {{author: .user.login,"
+                    f' is_bot: (.user.type == "Bot"), created_at: .{stamp}}}',
+        )
+        activity += [json.loads(line) for line in raw.splitlines() if line.strip()]
+    for item in activity:
+        item["created_at"] = _epoch(item["created_at"])
+    return activity
+
+
 def _canonical_login(login: str) -> str:
     """gh writes a GitHub App's login ``app/<slug>``; REST writes ``<slug>[bot]``.
 

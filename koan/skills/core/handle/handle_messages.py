@@ -58,6 +58,10 @@ _TEMPLATES = {
         "new_round": "{mention}Starting a new fix round on {pr_url} from the latest review.",
         "stopped": "{pr_url} was {state} — I stop handling this issue.",
         "merged": "{pr_url} is merged — nothing left to do.",
+        "issue_closed": (
+            "This issue is closed — I stop handling it. Reopen it and comment "
+            "`@{bot} handle` to pick it up again."
+        ),
         "busy": "Already on it — current step: {phase}.",
         "gate_open": (
             "{mention}I'm still waiting for a reply to the question above. Answer in this "
@@ -126,6 +130,10 @@ _TEMPLATES = {
         ),
         "stopped": "{pr_url} a été {state} — j'arrête de traiter cette issue.",
         "merged": "{pr_url} est fusionnée — plus rien à faire.",
+        "issue_closed": (
+            "Cette issue est fermée — j'arrête de la traiter. Rouvrez-la et commentez "
+            "`@{bot} handle` pour reprendre."
+        ),
         "busy": "Déjà en cours — étape actuelle : {phase}.",
         "gate_open": (
             "{mention}J'attends encore une réponse à la question ci-dessus. Répondez dans ce "

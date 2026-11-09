@@ -52,7 +52,7 @@ after an error, a lost event file) it re-evaluates the phase.
 | `qa_running` | QA queued | hand off, saying whether a QA report (marked comment) was posted |
 | `done` | hand-off made | a poke: open PR → new fix round; merged → `stopped`; closed → restart from triage |
 | `waiting_human` | any gate or error | a poke resumes the blocked step (`retry` re-runs the phase that errored) |
-| `stopped` | PR closed/merged | a poke on a closed PR restarts from triage |
+| `stopped` | PR closed/merged, or issue closed | a poke: merged PR → says so; issue still closed → says so; closed PR → restart from triage; open PR → new fix round |
 
 ### CI decision (phase `ci`)
 
@@ -158,8 +158,9 @@ state) — it never asserts green from an earlier signal.
 | unexpected error (any exception in a tick) | `retry`: re-run the phase that errored |
 
 A gate other than an error reopens only once a human (not a bot account) commented after
-it was posted (`gated_at`) — on the issue or on its PR, since CI and review gates are often
-answered there — with the answer, or the `@<bot> handle` itself. A poke queued while the
+it was posted (`gated_at`) — on the issue or on its PR (comment, inline review comment or
+review), since CI and review gates are often answered there — with the answer, or the
+`@<bot> handle` itself. A poke queued while the
 tick that opened the gate was still running predates the question: it does not redo the
 step, and the bot replies that it is still waiting for an answer. A poke from chat
 resumes once someone has replied in either thread.
@@ -191,6 +192,7 @@ resumes once someone has replied in either thread.
 | `github.nickname` not configured | fail fast, nothing posted |
 | PR URL with no pipeline | reply on the PR, nothing queued |
 | PR closed or merged mid-pipeline | phase `stopped`, comment once |
+| issue closed (a merged or closed PR is reported first) | closing the issue calls the pipeline off: the next tick that would act comments once and sets `stopped`; a `/handle` on a closed issue does not start. A step already queued still runs. Reopen the issue and poke to resume |
 | any exception during a tick | error comment + `waiting_human` with `resume: retry` |
 
 ## Integration hooks
@@ -217,7 +219,19 @@ resumes once someone has replied in either thread.
 
 - Triage emits a JSON verdict but has no golden-dataset eval yet.
 - Triage's Read/Glob/Grep are not path-scoped to the checkout; redaction covers known
-  token formats only, not arbitrary file contents.
+  token formats only, not arbitrary file contents. The tool list is the `allowed_tools`
+  convention `/ask`, `/explain` and `/plan` share: a pre-approval, not a denial — with
+  `skip_permissions: true` the provider does not restrict the session to it. The triage
+  is read-only by instruction, not by enforcement.
+- Comments go through `post_reply`, so the reply circuit breaker applies
+  (`github.max_replies_per_thread_per_hour`, default 10): past it a tick fails, cannot
+  post its error either, and the phase stays put until a poke. The operator gets the
+  breaker's chat warning.
+- Freshness and gate checks compare this host's clock with GitHub timestamps; a clock
+  off by minutes misjudges them.
+- A mention's text can redirect the command (shared @mention behavior): a GitHub issue or
+  PR URL in the same comment as `@<bot> handle` becomes the target. Put a linked answer
+  and the `@<bot> handle` in separate comments.
 - Board support targets organization-owned Projects (v2); the token needs `project`
   scope, and the team lookup needs `read:org`.
 - A plan whose *Open Questions* heading is translated or renamed is treated as unclear
