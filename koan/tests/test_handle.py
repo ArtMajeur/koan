@@ -60,6 +60,7 @@ class FakeGitHub:
         self.preview = ("pending", "")
         self.handed_off = []
         self.board_moves = []
+        self.board_error = ""
         self.assigned = False
         self.fail_comments_with = None
 
@@ -110,7 +111,7 @@ class FakeGitHub:
 
     def move_on_board(self, board, node_id, column):
         self.board_moves.append(column)
-        return True
+        return self.board_error
 
     def is_authorized(self, owner, repo, login, project_name):
         return login in self.authorized
@@ -698,6 +699,24 @@ class TestReviewLoop:
         assert "green" not in pipeline.github.posted[0]
         assert "no CI ran" in pipeline.github.posted[0]
 
+    def test_failed_board_move_is_reported_on_the_issue(self, pipeline):
+        self._seed_review(pipeline)
+        _write_sidecar(pipeline.instance_dir, True, time.time())
+        pipeline.cfg["board"] = {"owner": "o", "number": 1, "review": "Tech review"}
+        pipeline.github.board_error = "INSUFFICIENT_SCOPES"
+        pipeline.run(after="review")
+        assert pipeline.github.board_moves == ["Tech review"]
+        notice = pipeline.github.posted[0]
+        assert "**Tech review**" in notice and "`INSUFFICIENT_SCOPES`" in notice
+        assert "is ready for review" in pipeline.github.posted[1]
+
+    def test_successful_board_move_posts_nothing_extra(self, pipeline):
+        self._seed_review(pipeline)
+        _write_sidecar(pipeline.instance_dir, True, time.time())
+        pipeline.cfg["board"] = {"owner": "o", "number": 1, "review": "Tech review"}
+        pipeline.run(after="review")
+        assert len(pipeline.github.posted) == 1
+
     def test_sidecar_found_whatever_the_casing(self, pipeline):
         self._seed_review(pipeline)
         _write_sidecar(pipeline.instance_dir, True, time.time(), name="Owner_Repo_12.json")
@@ -768,6 +787,37 @@ class TestQa:
         pipeline.seed(qa_waits=2)  # spent by an earlier round's preview
         pipeline.run(after="review")
         assert (pipeline.record()["phase"], pipeline.record()["qa_waits"]) == ("qa", 1)
+
+    _BOARD = {"owner": "o", "number": 1, "status_field": "Status"}
+    _PROJECT = json.dumps({"data": {"organization": {"projectV2": {
+        "id": "P", "field": {"id": "F", "options": [{"id": "O1", "name": "Tech review"}]}}}}})
+
+    def test_board_move_without_a_board_is_silent(self):
+        from skills.core.handle import handle_github
+        with patch.object(handle_github, "run_gh", side_effect=AssertionError("no call")):
+            assert handle_github.move_on_board({}, "I_1", "Tech review") == ""
+            assert handle_github.move_on_board(self._BOARD, "I_1", "") == ""
+
+    def test_board_move_returns_github_error(self):
+        from skills.core.handle import handle_github
+        error = RuntimeError("gh failed: gh api graphql -f... — gh: Your token has not\n"
+                             "been granted the `read:project` scope")
+        with patch.object(handle_github, "run_gh", side_effect=error):
+            reason = handle_github.move_on_board(self._BOARD, "I_1", "Tech review")
+        assert reason.endswith("has not been granted the 'read:project' scope")
+
+    def test_board_move_names_a_missing_column(self):
+        from skills.core.handle import handle_github
+        with patch.object(handle_github, "run_gh", return_value=self._PROJECT):
+            reason = handle_github.move_on_board(self._BOARD, "I_1", "Code review")
+        assert "'Code review'" in reason
+
+    def test_board_move_success(self):
+        from skills.core.handle import handle_github
+        replies = iter([self._PROJECT, json.dumps(
+            {"data": {"addProjectV2ItemById": {"item": {"id": "IT"}}}}), "{}"])
+        with patch.object(handle_github, "run_gh", lambda *a, **k: next(replies)):
+            assert handle_github.move_on_board(self._BOARD, "I_1", "Tech review") == ""
 
     def test_preview_without_a_url_is_not_ready(self):
         from skills.core.handle import handle_github
