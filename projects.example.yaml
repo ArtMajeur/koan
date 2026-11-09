@@ -64,6 +64,13 @@ defaults:
   #   body_enabled: true         # Include body text with the verdict
   #   include_blockers: true     # List blockers in REQUEST_CHANGES body
 
+  # /handle QA — run the QA step for this project (needs a PR preview
+  # deployment). Overrides the global handle.qa in config.yaml key by key.
+  # handle:
+  #   qa:
+  #     command: /my_team.qa               # Skill taking the preview URL as its first argument
+  #     preview_environment: review/pr-{pr}  # GitHub deployment environment of the PR preview
+
   # Private review gate — override the post-PR /fix, /implement, and
   # /rebase backend-only review/fix loop for this project.
   # private_review_gate:

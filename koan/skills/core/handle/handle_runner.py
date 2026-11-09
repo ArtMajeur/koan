@@ -152,7 +152,7 @@ def _load_tick(
     tick = Tick(
         issue_url=issue_url, owner=owner, repo=repo, number=number,
         project_name=project_name, project_path=project_path,
-        instance_dir=instance_dir, bot=bot, config=get_handle_config(),
+        instance_dir=instance_dir, bot=bot, config=get_handle_config(project_name),
         record=handle_state.load_record(instance_dir, issue_url),
         after=_after_tag(context), issue=issue,
     )

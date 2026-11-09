@@ -48,7 +48,7 @@ after an error, a lost event file) it re-evaluates the phase.
 | `ci` | PR known | decide from the **PR head's own runs** (below) |
 | `reviewing` | head CI green, or no CI | after `/review --force`: the review sidecar's `lgtm` for the **PR head** |
 | `fixing` | review blocking, rounds left | after `/rebase --fix` → `ci` |
-| `qa` | review lgtm, QA configured | preview deployment for the PR head (or its merge commit) ready, with an `environment_url` → queue the QA command; else re-check later, at most `max_wait_ticks` times per wait |
+| `qa` | review lgtm, QA configured for the project | preview deployment for the PR head (or its merge commit) ready, with an `environment_url` → queue the QA command; else re-check later, at most `max_wait_ticks` times per wait |
 | `qa_running` | QA queued | hand off, saying whether a QA report (marked comment) was posted |
 | `done` | hand-off made | a poke: open PR → new fix round; merged → `stopped`; closed → restart from triage |
 | `waiting_human` | any gate or error | a poke resumes the blocked step (`retry` re-runs the phase that errored) |
@@ -83,6 +83,7 @@ state) — it never asserts green from an earlier signal.
 | issue URL | command arg | yes | a PR URL tracked by `/handle` resolves to its issue; the API's `html_url` is the canonical key |
 | `after:<step>` | command arg | no | set by the pipeline only; marks a chained tick |
 | `handle:` | `config.yaml` | no | `max_review_rounds`, `poll_minutes`, `max_polls`, `ready_before_ci`, `board`, `product_team`, `qa` |
+| `handle.qa` | `projects.yaml` | no | per project (or under `defaults`); overrides the global `handle.qa` key by key |
 
 ## Outputs / side effects
 
@@ -179,6 +180,11 @@ resumes once someone has replied in either thread.
   best-effort: a failure is logged and the pipeline continues.
 - Nothing instance-specific lives in code: board, team, QA command and preview
   environment pattern (`{pr}` is the only placeholder) come from `handle:` in `config.yaml`.
+- QA is a per-project capability: a preview deployment belongs to one repository. A
+  project's `handle.qa` in `projects.yaml` overrides the global one key by key, so QA can
+  be configured for the projects that have previews only. A project left without a
+  command or a preview environment never enters `qa`: an lgtm review hands off at once,
+  with no wait for a preview that cannot come.
 - The PR stays a draft until the hand-off (or until CI, with `ready_before_ci`);
   `/handle` never merges.
 - The triage's free text (summary, questions) goes through `leak_detector` before it

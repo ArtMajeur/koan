@@ -140,7 +140,8 @@ def pipeline(tmp_path, monkeypatch):
     with ExitStack() as stack:
         fake.install(stack.enter_context)
         stack.enter_context(patch.object(handle_runner, "_bot_login", return_value=BOT))
-        stack.enter_context(patch("app.config.get_handle_config", return_value=config))
+        # Takes the project: QA settings are per project.
+        stack.enter_context(patch("app.config.get_handle_config", side_effect=lambda project: config))
         stack.enter_context(patch("app.config.get_branch_prefix", return_value="koan/"))
         stack.enter_context(patch("app.config.is_ci_check_enabled", side_effect=lambda: ci_check["enabled"]))
         stack.enter_context(patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 2}))
@@ -882,6 +883,60 @@ class TestGateResume:
         pipeline.run()
         assert pipeline.record()["phase"] == "planning"
         assert f"/plan {ISSUE}" in pipeline.pending()[0]
+
+
+class TestProjectQaConfig:
+    QA = {"command": "/my_team.qa", "preview_environment": "review/pr-{pr}"}
+
+    @pytest.fixture
+    def projects_yaml(self, tmp_path, monkeypatch):
+        """Write projects.yaml under a tmp KOAN_ROOT; yields the writer."""
+        import yaml
+
+        from app.projects_config import invalidate_projects_config_cache
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        def write(projects, defaults=None):
+            doc = {"projects": {name: {"path": str(tmp_path), **cfg} for name, cfg in projects.items()}}
+            if defaults:
+                doc["defaults"] = defaults
+            (tmp_path / "projects.yaml").write_text(yaml.safe_dump(doc))
+            invalidate_projects_config_cache()
+
+        yield write
+        invalidate_projects_config_cache()
+
+    def _qa(self, project, global_handle=None):
+        from app.config import get_handle_config
+
+        with patch("app.utils.load_config", return_value={"handle": global_handle or {}}):
+            return get_handle_config(project)["qa"]
+
+    def test_qa_set_on_one_project_leaves_the_others_without_qa(self, projects_yaml):
+        projects_yaml({"shop": {"handle": {"qa": self.QA}}, "mobile": {}})
+        assert self._qa("shop")["command"] == "/my_team.qa"
+        assert self._qa("shop")["preview_environment"] == "review/pr-{pr}"
+        assert self._qa("mobile")["command"] == ""
+
+    def test_project_qa_overrides_the_global_one_key_by_key(self, projects_yaml):
+        projects_yaml({"mobile": {"handle": {"qa": {"command": ""}}}, "shop": {}})
+        global_handle = {"qa": {**self.QA, "wait_minutes": 9}}
+        assert self._qa("mobile", global_handle)["command"] == ""
+        assert self._qa("mobile", global_handle)["wait_minutes"] == 9
+        assert self._qa("shop", global_handle)["command"] == "/my_team.qa"
+
+    def test_defaults_apply_to_every_project(self, projects_yaml):
+        projects_yaml({"shop": {}}, defaults={"handle": {"qa": self.QA}})
+        assert self._qa("shop")["command"] == "/my_team.qa"
+
+    def test_project_without_qa_hands_off_right_after_an_lgtm_review(self, pipeline):
+        pipeline.seed(phase="reviewing", pr_url=PR, pr_number="12", branch="koan/implement-7",
+                      phase_started_at=time.time() - 60)
+        _write_sidecar(pipeline.instance_dir, True, time.time())
+        pipeline.run(after="review")
+        assert pipeline.record()["phase"] == "done"
+        assert pipeline.events() == []
 
 
 class TestAutoreviewGuard:

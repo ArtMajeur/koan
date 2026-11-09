@@ -1521,8 +1521,12 @@ def get_ci_check_idle_timeout() -> int:
     return _safe_int(value, get_first_output_timeout())
 
 
-def get_handle_config() -> dict:
+def get_handle_config(project_name: str = "") -> dict:
     """Return the ``handle:`` section for the /handle pipeline, with defaults.
+
+    ``qa`` is per project: a preview deployment belongs to one repository, so
+    the project's ``handle.qa`` in projects.yaml (or ``defaults``) overrides
+    the global one key by key.
 
     Keys: ``max_review_rounds`` (int, default 3, floored at 1: fix rounds, so
     up to N+1 reviews), ``poll_minutes`` / ``max_polls`` (CI re-checks when no
@@ -1538,6 +1542,7 @@ def get_handle_config() -> dict:
         section = {}
     board = section.get("board") if isinstance(section.get("board"), dict) else {}
     qa = section.get("qa") if isinstance(section.get("qa"), dict) else {}
+    qa = {**qa, **_project_handle_qa(project_name)}
     return {
         "max_review_rounds": max(1, _safe_int(section.get("max_review_rounds", 3), 3)),
         "poll_minutes": max(1, _safe_int(section.get("poll_minutes", 5), 5)),
@@ -1552,6 +1557,13 @@ def get_handle_config() -> dict:
             "wait_minutes": max(1, _safe_int(qa.get("wait_minutes", 5), 5)),
         },
     }
+
+
+def _project_handle_qa(project_name: str) -> dict:
+    """The project's ``handle.qa`` mapping from projects.yaml, or {} when unset."""
+    handle = _load_project_overrides(project_name).get("handle")
+    qa = handle.get("qa") if isinstance(handle, dict) else None
+    return qa if isinstance(qa, dict) else {}
 
 
 def _missions_section() -> dict:

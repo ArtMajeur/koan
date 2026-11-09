@@ -1043,7 +1043,9 @@ page_cache_reclaim:
 #     in_progress: In Progress
 #     review: Tech review
 #     product_review: Product review
-#   qa:                        # QA is off without a command and a preview environment
+#   qa:                        # QA is off without a command and a preview environment.
+#                              # Per project: set handle.qa in projects.yaml instead (it
+#                              # overrides this one key by key) to run QA only where previews exist.
 #     command: /my_team.qa     # Skill taking the preview URL as its first argument
 #     preview_environment: review/pr-{pr}   # GitHub deployment environment of the PR preview
 #     wait_minutes: 5          # Re-check interval while the preview deploys (default: 5)
