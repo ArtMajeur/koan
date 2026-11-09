@@ -152,6 +152,11 @@ state) — it never asserts green from an earlier signal.
 | no review verdict for the PR head | re-run `/review` |
 | unexpected error (any exception in a tick) | `retry`: re-run the phase that errored |
 
+A gate other than an error reopens only once a human commented in the thread after it was
+posted (`gated_at`) — its answer, or the `@<bot> handle` itself. A poke queued while the
+tick that opened the gate was still running predates the question: it is ignored without a
+new comment, instead of redoing the step unanswered.
+
 ## Invariants
 
 - The tick itself never edits code; code changes come only from `/implement` and
@@ -187,6 +192,9 @@ state) — it never asserts green from an earlier signal.
 - **Runner:** `skills.core.handle.handle_runner`, registered in `_SKILL_RUNNERS`.
 - **GitHub/Jira:** `github_enabled: true`, `github_context_aware: true`; GitHub only.
 - **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`.
+- **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue an
+  active `/handle` pipeline tracks (`handle_state.tracks_mission`): a second review/fix
+  loop would push new heads under the pipeline and race its `/review` steps.
 - **Plan:** `plan_runner.extract_open_questions()` — the same section boundaries the
   assumptions audit writes into.
 - **Review:** reads `instance/.review-findings/<owner>_<repo>_<pr>.json`.

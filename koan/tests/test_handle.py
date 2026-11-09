@@ -637,6 +637,8 @@ class TestReviewLoop:
         _write_sidecar(pipeline.instance_dir, False, time.time())
         pipeline.run(after="review")
         assert pipeline.record()["resume"] == "fix"
+        pipeline.github.comments.append(
+            {"author": "dev", "body": f"Looked at it. @{BOT} handle", "created_at": time.time() + 5})
         pipeline.run()
         assert pipeline.record()["review_round"] == 4
         assert f"/rebase {PR} --fix" in pipeline.pending()[0]
@@ -778,6 +780,53 @@ class TestErrors:
         with patch.object(handle_runner, "_bot_login", return_value=""):
             ok, summary = pipeline.run()
         assert not ok and "nickname" in summary
+
+
+class TestGateResume:
+    def _gate_on_plan(self, pipeline):
+        pipeline.seed(phase="planning", phase_started_at=100.0)
+        pipeline.github.comments.append(_plan_comment("- Guests too?", 200.0))
+        pipeline.run(after="plan")
+        assert pipeline.record()["phase"] == "waiting_human"
+
+    def test_poke_queued_before_the_gate_does_not_reopen_it(self, pipeline):
+        self._gate_on_plan(pipeline)
+        posted = len(pipeline.github.posted)
+        pipeline.run()
+        assert pipeline.record()["phase"] == "waiting_human"
+        assert pipeline.pending() == [] and len(pipeline.github.posted) == posted
+
+    def test_reply_after_the_gate_resumes(self, pipeline):
+        self._gate_on_plan(pipeline)
+        pipeline.github.comments.append(
+            {"author": "dev", "body": f"Guests too. @{BOT} handle", "created_at": time.time() + 5})
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+        assert f"/plan {ISSUE}" in pipeline.pending()[0]
+
+
+class TestAutoreviewGuard:
+    def test_autoreview_skips_a_pr_driven_by_handle(self, tmp_path):
+        from app.mission_runner import _maybe_queue_autoreview
+
+        (tmp_path / "missions.md").write_text(EMPTY_MISSIONS)
+        handle_state.update_record(str(tmp_path), ISSUE, phase="implementing")
+        with (
+            patch("app.utils.insert_pending_mission") as insert,
+            patch("app.session_tracker.detect_pr_created", return_value=True),
+            patch("app.projects_config.get_project_autoreview", return_value=True),
+        ):
+            _maybe_queue_autoreview(
+                str(tmp_path), "proj", f"/implement {ISSUE}", f"Created PR: {PR}",
+                {"projects": {"proj": {}}}, None,
+            )
+        insert.assert_not_called()
+
+    @pytest.mark.parametrize("phase", ["done", "stopped", None])
+    def test_finished_or_unknown_pipelines_do_not_block_autoreview(self, tmp_path, phase):
+        if phase:
+            handle_state.update_record(str(tmp_path), ISSUE, phase=phase)
+        assert handle_state.tracks_mission(str(tmp_path), f"/implement {ISSUE}") is False
 
 
 class TestReentry:

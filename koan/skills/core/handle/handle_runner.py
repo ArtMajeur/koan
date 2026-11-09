@@ -545,7 +545,22 @@ def _resume(tick: Tick) -> Result:
     if resume == "retry":
         tick.save(phase=tick.record.get("failed_phase", ""), resume=None)
         return _dispatch(tick)
+    if not _replied_since_gate(tick):
+        # A poke queued while the tick that opened this gate was running
+        # predates its question: resuming would redo the step unanswered.
+        return True, f"Gate still open on {tick.issue_url}: no reply since the question"
     return _RESUME[resume](tick)
+
+
+def _replied_since_gate(tick: Tick) -> bool:
+    """True when a human commented after the gate was posted (its answer, or the poke)."""
+    gated_at = tick.record.get("gated_at")
+    if gated_at is None:
+        return True
+    return any(
+        c.get("created_at", 0) > gated_at and not gh.same_login(c.get("author") or "", tick.bot)
+        for c in tick.comments
+    )
 
 
 def _stop(tick: Tick, state: str) -> Result:
@@ -563,8 +578,9 @@ def _queue(tick: Tick, command: str, after: str, phase: str) -> Result:
 
 
 def _gate(tick: Tick, key: str, resume: str, **values) -> Result:
+    gated_at = time.time()
     tick.comment(key, **values)
-    tick.save(phase="waiting_human", resume=resume)
+    tick.save(phase="waiting_human", resume=resume, gated_at=gated_at)
     return True, f"Waiting for a human ({key}) on {tick.issue_url}"
 
 

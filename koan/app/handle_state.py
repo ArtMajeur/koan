@@ -10,6 +10,7 @@ See ``specs/skills/handle.md`` for the phase model and chaining contract.
 import contextlib
 import fcntl
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -80,6 +81,25 @@ def find_issue_for_pr(instance_dir: str, pr_url: str) -> Optional[str]:
             if tracked and tracked.rstrip("/").lower() == wanted:
                 return issue_url
     return None
+
+
+_ISSUE_URL_RE = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/issues/\d+")
+
+
+def tracks_mission(instance_dir: str, mission_title: str) -> bool:
+    """True when an active /handle pipeline owns an issue this mission targets.
+
+    Used to keep other automation (autoreview) from running a second
+    review/fix loop on the PR the pipeline is driving.
+    """
+    urls = _ISSUE_URL_RE.findall(mission_title or "")
+    if not urls:
+        return False
+    with _locked(instance_dir):
+        data = _read_all(instance_dir)
+    return any(
+        (data.get(url) or {}).get("phase", "") not in ("", "done", "stopped") for url in urls
+    )
 
 
 def handle_entry(project_name: str, issue_url: str, after: str = "") -> str:

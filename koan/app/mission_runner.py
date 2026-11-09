@@ -1791,6 +1791,14 @@ def _maybe_queue_autoreview(
         )
         return
 
+    # Nor on a PR a /handle pipeline drives: it runs its own review/fix loop,
+    # and a second one would push new heads under it (its review verdict then
+    # no longer matches the PR head) and dedup its /review steps at random.
+    from app.handle_state import tracks_mission
+    if tracks_mission(instance_dir, mission_title):
+        _log_runner("info", f"Autoreview: skipped for {project_name} — /handle owns this PR")
+        return
+
     # Skip if auto-merged — PR is already done
     if merge_result is not None:
         return
