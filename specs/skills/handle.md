@@ -177,7 +177,9 @@ resumes once someone has replied in either thread.
 - A tick never ends silently: every exception is caught at the runner boundary, reported
   on the issue (redacted, mentioning the stored requester), and leaves a resumable gate.
 - Board moves, team lookup, assignment, the review request and marking the PR ready are
-  best-effort: a failure is logged and the pipeline continues.
+  best-effort: a failure is logged and the pipeline continues. A failed board move is
+  also reported on the issue (redacted, naming the column to set by hand): a stale board
+  is otherwise invisible to the team. No board configured stays silent.
 - Nothing instance-specific lives in code: board, team, QA command and preview
   environment pattern (`{pr}` is the only placeholder) come from `handle:` in `config.yaml`.
 - QA is a per-project capability: a preview deployment belongs to one repository. A

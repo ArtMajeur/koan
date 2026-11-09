@@ -55,6 +55,10 @@ _TEMPLATES = {
         "qa_no_report": " Browser QA was queued but left no report (failed or timed out).",
         "qa_preview_failed": " Browser QA was skipped: the preview deployment failed.",
         "qa_preview_timeout": " Browser QA was skipped: the preview was not ready in time.",
+        "board_move_failed": (
+            "{mention}I couldn't move this issue to **{column}** on the project board. "
+            "Move it by hand. GitHub said: `{error}`"
+        ),
         "new_round": "{mention}Starting a new fix round on {pr_url} from the latest review.",
         "stopped": "{pr_url} was {state} — I stop handling this issue.",
         "merged": "{pr_url} is merged — nothing left to do.",
@@ -124,6 +128,10 @@ _TEMPLATES = {
         ),
         "qa_preview_failed": " QA navigateur non lancée : le déploiement de la preview a échoué.",
         "qa_preview_timeout": " QA navigateur non lancée : la preview n'était pas prête à temps.",
+        "board_move_failed": (
+            "{mention}Je n'ai pas pu déplacer cette issue dans **{column}** sur le tableau "
+            "du projet. Déplacez-la à la main. GitHub a répondu : `{error}`"
+        ),
         "new_round": (
             "{mention}Je lance un nouveau tour de correction sur {pr_url} "
             "à partir de la dernière revue."

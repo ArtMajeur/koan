@@ -1,7 +1,8 @@
 """GitHub reads and writes for the /handle pipeline.
 
 Required reads raise ``RuntimeError`` so the tick can gate on them; the
-best-effort writes (assignment, board, team lookup) log and return False.
+best-effort writes (assignment, team lookup) log and return False. The board
+move returns why it failed, so the runner can say so on the issue.
 """
 
 import json
@@ -274,17 +275,26 @@ def is_team_member(org: str, team: str, login: str) -> bool:
     return state.strip() == "active"
 
 
-def move_on_board(board: dict, issue_node_id: str, column: str) -> bool:
-    """Set the board's single-select status of the issue to *column*."""
+def move_on_board(board: dict, issue_node_id: str, column: str) -> str:
+    """Set the board's single-select status of the issue to *column*.
+
+    Return why the move failed, or ``""`` when it succeeded or no board column
+    is configured.
+    """
     owner, number = board.get("owner"), board.get("number")
-    if not (owner and number and column and issue_node_id):
-        return False
+    if not (owner and number and column):
+        return ""
+    if not issue_node_id:
+        return "the issue has no node id"
+    field = board.get("status_field", "Status")
     try:
         project = _json(run_gh(
             "api", "graphql", "-f", f"query={_PROJECT_QUERY}", "-f", f"org={owner}",
-            "-F", f"num={int(number)}", "-f", f"field={board.get('status_field', 'Status')}",
+            "-F", f"num={int(number)}", "-f", f"field={field}",
         ))["data"]["organization"]["projectV2"]
-        option = next(o["id"] for o in project["field"]["options"] if o["name"] == column)
+        option = next((o["id"] for o in project["field"]["options"] if o["name"] == column), None)
+        if option is None:
+            return f"the {field!r} field of board {owner}/{number} has no {column!r} option"
         item = _json(run_gh(
             "api", "graphql", "-f", f"query={_ADD_ITEM}",
             "-f", f"p={project['id']}", "-f", f"c={issue_node_id}",
@@ -293,7 +303,8 @@ def move_on_board(board: dict, issue_node_id: str, column: str) -> bool:
             "api", "graphql", "-f", f"query={_SET_STATUS}", "-f", f"p={project['id']}",
             "-f", f"i={item}", "-f", f"f={project['field']['id']}", "-f", f"o={option}",
         )
-        return True
-    except (RuntimeError, KeyError, TypeError, ValueError, StopIteration) as e:
+        return ""
+    except (RuntimeError, KeyError, TypeError, ValueError) as e:
         _log(f"board move to {column!r} failed: {e}")
-        return False
+        # gh's stderr spans several lines; the issue comment quotes it as inline code.
+        return " ".join(str(e).replace("`", "'").split()) or type(e).__name__
