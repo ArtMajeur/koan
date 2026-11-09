@@ -580,6 +580,27 @@ _ASSUMPTIONS_AUDIT_HEADER = (
 )
 
 
+def _open_questions_span(plan_text: str) -> Optional[Tuple[int, int]]:
+    """Start/end offsets of the Open Questions section body, or None if absent.
+
+    The section runs to the next same-or-higher-level heading, so an assumptions
+    audit folded into it — or a deeper sub-heading — stays inside.
+    """
+    match = _OPEN_QUESTIONS_RE.search(plan_text or "")
+    if not match:
+        return None
+    heading_level = match.group(0).strip().split(" ", 1)[0]  # "##", "###" or "####"
+    next_heading = re.compile(rf"^#{{2,{len(heading_level)}}}\s+", re.MULTILINE)
+    next_match = next_heading.search(plan_text, match.end())
+    return match.end(), (next_match.start() if next_match else len(plan_text))
+
+
+def extract_open_questions(plan_text: str) -> Optional[str]:
+    """Return the body of the plan's Open Questions section, or None if absent."""
+    span = _open_questions_span(plan_text)
+    return plan_text[span[0]:span[1]].strip() if span else None
+
+
 def _merge_assumptions_into_open_questions(plan_text: str, findings: str) -> str:
     """Fold assumptions-audit findings into the plan's Open Questions section.
 
@@ -589,17 +610,10 @@ def _merge_assumptions_into_open_questions(plan_text: str, findings: str) -> str
     """
     block = f"{_ASSUMPTIONS_AUDIT_HEADER}\n\n{findings.strip()}"
 
-    match = _OPEN_QUESTIONS_RE.search(plan_text)
-    if not match:
+    span = _open_questions_span(plan_text)
+    if span is None:
         return f"{plan_text.rstrip()}\n\n### Open Questions\n\n{block}\n"
-
-    heading_level = match.group(0).strip().split(" ", 1)[0]  # "##", "###" or "####"
-    next_heading = re.compile(
-        rf"^#{{2,{len(heading_level)}}}\s+", re.MULTILINE,
-    )
-    section_start = match.end()
-    next_match = next_heading.search(plan_text, section_start)
-    insert_at = next_match.start() if next_match else len(plan_text)
+    insert_at = span[1]
 
     before = plan_text[:insert_at].rstrip()
     after = plan_text[insert_at:]

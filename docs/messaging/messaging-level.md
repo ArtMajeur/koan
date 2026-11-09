@@ -4,7 +4,7 @@ title: "Messaging level (bridge verbosity)"
 description: "Explains the `messaging.level` setting (`normal`/`debug`) that controls how much lifecycle/progress chatter Kōan's Telegram/Slack bridge sends versus only logs."
 tags: [messaging]
 created: 2026-06-24
-updated: 2026-10-13
+updated: 2026-11-09
 ---
 
 # Messaging level (bridge verbosity)
@@ -64,6 +64,7 @@ without rewriting YAML — handy for temporary debugging.
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
 | Recurring-mission success (title is a scheduler injection — `[daily]`/`[hourly]`/`[weekly]`/`[every …]` tag + text — of a mission registered in `recurring.json`) | log only — scheduler-driven, not operator-requested per run; a real finding still reaches chat via the agent's own conclusion. An operator one-off that merely starts with such a tag keeps its `Done:` line | sent with journal summary |
+| Pipeline-tick success (a tick a pipeline queued for itself: `/handle <url> after:<step>`) | log only — queued by the pipeline, not by the operator; the steps report their own outcome and gates reach the requester as issue comments. A failed tick and a human `/handle` still report | sent with journal summary |
 | Idle-streak notice (`💤 No work available…`) | log only — any productive run (e.g. a recurring poll) re-arms it, so it would repeat every interval. The `⏸️ Auto-paused…` notice is still sent | sent |
 | Mission failure | one message: `❌ [project] 🔍 Review failed: <pr-url>` + the reason on the next line (`❌ [project] Failed: <title>` for other missions) | same first line + run counter + failure context |
 | GitHub/Jira per-mention queue line | log only | sent |

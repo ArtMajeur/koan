@@ -1807,6 +1807,21 @@ def _maybe_queue_autoreview(
     if not get_project_autoreview(projects_config, project_name):
         return
 
+    # Nor on a PR a /handle pipeline drives: it runs its own review/fix loop,
+    # and a second one would push new heads under it (its review verdict then
+    # no longer matches the PR head) and dedup its /review steps at random.
+    from app.handle_state import tracks_mission
+    try:
+        handled = tracks_mission(instance_dir, mission_title)
+    except RuntimeError as e:
+        # Best-effort, like the ## CI relay: an unreadable /handle state must
+        # not break post-mission processing for every other mission.
+        _log_runner("error", f"Autoreview: /handle state unreadable, not skipping: {e}")
+        handled = False
+    if handled:
+        _log_runner("info", f"Autoreview: skipped for {project_name} — /handle owns this PR")
+        return
+
     # Detect PR creation — check pending_content first, then full stdout.
     # The agent often deletes pending.md before exiting, so pending_content
     # falls back to _read_stdout_summary() capped at 2000 chars — PR URLs

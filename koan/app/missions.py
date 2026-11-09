@@ -2539,13 +2539,19 @@ def update_ci_item_attempt(content: str, pr_url: str) -> str:
 # /command https://github.com/... → ("command", "url")
 _GITHUB_ACTION_RE = re.compile(
     r"/(ask|audit|benchmark|brainstorm|check|check_need|ci_check"
-    r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request"
+    r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request|handle"
     r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile|question"
     r"|rb|rc|rebase|recreate|refactor|rereview|re_review|review|reviewrebase|rf|rr|rv|xp"
     r"|secu|security|security_audit|sq|squash"
     r"|ultrareview|ultra_review|urv|speckit|speckit_from_branch)\s+"
     r"(https://github\.com/[^\s]+)"
 )
+
+
+# A continuation tag right after the URL marks a different request than the
+# bare command: a chained tick queued by a pipeline (e.g. `/handle <url>
+# after:plan`) must neither swallow nor be swallowed by a human-issued one.
+_CONTINUATION_TAG_RE = re.compile(r"^\s*after:(\S+)")
 
 
 def _extract_mission_signature(text: str) -> Optional[str]:
@@ -2561,8 +2567,17 @@ def _extract_mission_signature(text: str) -> Optional[str]:
     if match:
         command = match.group(1)
         url = match.group(2).rstrip("/)")  # strip trailing paren or slash
+        tag = _CONTINUATION_TAG_RE.search(text[match.end():])
+        if tag:
+            return f"{command}:{url}:after:{tag.group(1)}"
         return f"{command}:{url}"
     return None
+
+
+def is_continuation_mission(text: str) -> bool:
+    """True when *text* is a tick a pipeline queued for itself (``after:<step>``)."""
+    match = _GITHUB_ACTION_RE.search(text)
+    return bool(match and _CONTINUATION_TAG_RE.search(text[match.end():]))
 
 
 def is_duplicate_mission(content: str, new_entry: str) -> bool:

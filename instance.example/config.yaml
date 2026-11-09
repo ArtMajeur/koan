@@ -1027,6 +1027,28 @@ page_cache_reclaim:
 # ci_check:
 #   enabled: true              # Master switch (default: true)
 
+# /handle pipeline: issue → triage → /plan → /implement → CI → /review +
+# /rebase --fix loop → optional QA → hand-off. Every key is optional.
+# See specs/skills/handle.md.
+# handle:
+#   max_review_rounds: 3       # Fix rounds after a blocking review, so up to 4 reviews (default: 3)
+#   poll_minutes: 5            # CI re-check interval when no ## CI relay will fire (default: 5)
+#   max_polls: 12              # CI re-checks before pinging the requester (default: 12)
+#   ready_before_ci: false     # true: leave draft before CI, for CIs that skip draft PRs
+#   product_team: my-team      # Org team slug; its members get the board's product_review column
+#   board:                     # Organization Projects (v2) board; token needs the `project` scope
+#     owner: my-org
+#     number: 1
+#     status_field: Status
+#     in_progress: In Progress
+#     review: Tech review
+#     product_review: Product review
+#   qa:                        # QA is off without a command and a preview environment
+#     command: /my_team.qa     # Skill taking the preview URL as its first argument
+#     preview_environment: review/pr-{pr}   # GitHub deployment environment of the PR preview
+#     wait_minutes: 5          # Re-check interval while the preview deploys (default: 5)
+#     max_wait_ticks: 5        # Re-checks before handing off without QA (default: 5)
+
 # CI dispatch: auto-create fix missions when CI fails on Koan's open PRs.
 # Checks GitHub check-runs API each iteration (per-project cooldown).
 # Only active when ci_check.enabled is true.

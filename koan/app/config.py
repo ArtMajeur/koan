@@ -1521,6 +1521,39 @@ def get_ci_check_idle_timeout() -> int:
     return _safe_int(value, get_first_output_timeout())
 
 
+def get_handle_config() -> dict:
+    """Return the ``handle:`` section for the /handle pipeline, with defaults.
+
+    Keys: ``max_review_rounds`` (int, default 3, floored at 1: fix rounds, so
+    up to N+1 reviews), ``poll_minutes`` / ``max_polls`` (CI re-checks when no
+    ``## CI`` relay will fire; defaults 5 and 12), ``ready_before_ci`` (bool,
+    default False: take the PR out of draft before CI, for CIs that skip drafts),
+    ``board`` (dict, optional GitHub Projects v2 board), ``product_team``
+    (org team slug, optional) and ``qa`` (dict: ``command``,
+    ``preview_environment``, ``max_wait_ticks``, ``wait_minutes`` — QA is off
+    without a command and a preview environment).
+    """
+    section = _load_config().get("handle") or {}
+    if not isinstance(section, dict):
+        section = {}
+    board = section.get("board") if isinstance(section.get("board"), dict) else {}
+    qa = section.get("qa") if isinstance(section.get("qa"), dict) else {}
+    return {
+        "max_review_rounds": max(1, _safe_int(section.get("max_review_rounds", 3), 3)),
+        "poll_minutes": max(1, _safe_int(section.get("poll_minutes", 5), 5)),
+        "max_polls": max(1, _safe_int(section.get("max_polls", 12), 12)),
+        "ready_before_ci": bool(section.get("ready_before_ci", False)),
+        "board": board,
+        "product_team": str(section.get("product_team") or "").strip(),
+        "qa": {
+            "command": str(qa.get("command") or "").strip(),
+            "preview_environment": str(qa.get("preview_environment") or "").strip(),
+            "max_wait_ticks": max(1, _safe_int(qa.get("max_wait_ticks", 5), 5)),
+            "wait_minutes": max(1, _safe_int(qa.get("wait_minutes", 5), 5)),
+        },
+    }
+
+
 def _missions_section() -> dict:
     return _load_config().get("missions", {}) or {}
 

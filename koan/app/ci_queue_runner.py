@@ -94,6 +94,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
                 instance_dir,
                 f"🚫 PR #{pr_number} was closed — removed from CI queue: {pr_url}",
             )
+        _relay_to_handle(instance_dir, pr_url, pr_state.lower())
         return f"PR #{pr_number} {pr_state.lower()} — removed from ## CI"
 
     status, _run_id, _logs = check_ci_status(branch, full_repo)
@@ -107,6 +108,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
             instance_dir,
             f"✅ CI passed for PR #{pr_number} — ready for review: {pr_url}",
         )
+        _relay_to_handle(instance_dir, pr_url, "success")
         return f"CI passed for PR #{pr_number} ({branch})"
 
     if status == "failure":
@@ -132,6 +134,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
                 instance_dir,
                 f"🚦 CI still failing after {max_attempts} attempts for PR #{pr_number}: {pr_url}",
             )
+            _relay_to_handle(instance_dir, pr_url, "failure")
             return f"CI failed {max_attempts} times for PR #{pr_number} — giving up"
 
     if status == "none":
@@ -139,6 +142,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
             missions_path,
             lambda c: remove_ci_item(c, pr_url),
         )
+        _relay_to_handle(instance_dir, pr_url, "none")
         return f"No CI runs found for PR #{pr_number} — removed from ## CI"
 
     if status == CI_STATUS_BLOCKED_APPROVAL:
@@ -155,6 +159,7 @@ def drain_one(instance_dir: str) -> Optional[str]:
             f"⏸ CI workflows on PR #{pr_number} are waiting for maintainer "
             f"approval — Kōan stopped retrying: {pr_url}",
         )
+        _relay_to_handle(instance_dir, pr_url, CI_STATUS_BLOCKED_APPROVAL)
         return (
             f"CI blocked on maintainer approval for PR #{pr_number} — "
             f"removed from ## CI"
@@ -162,6 +167,19 @@ def drain_one(instance_dir: str) -> Optional[str]:
 
     # status == "pending" — leave in ## CI
     return None
+
+
+def _relay_to_handle(instance_dir: str, pr_url: str, outcome: str) -> None:
+    """Wake the /handle pipeline waiting on *pr_url*'s CI, if any.
+
+    Best-effort: the ``## CI`` queue must keep draining even when the
+    /handle state is unreadable.
+    """
+    try:
+        from app.handle_state import relay_ci_outcome
+        relay_ci_outcome(instance_dir, pr_url, outcome)
+    except (OSError, RuntimeError, ValueError) as e:
+        print(f"[ci_queue] /handle relay failed for {pr_url}: {e}", file=sys.stderr)
 
 
 def _check_pr_state_safe(pr_number: str, full_repo: str) -> str:
