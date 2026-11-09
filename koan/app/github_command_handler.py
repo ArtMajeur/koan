@@ -1078,6 +1078,27 @@ def _is_bot_still_requested(owner: str, repo: str, pr_number: str, bot_username:
         return False
 
 
+def _handle_carries_issue(notification: dict, instance_dir: str) -> bool:
+    """True when the notification's issue belongs to a /handle pipeline.
+
+    /handle assigns the bot to its issue, and GitHub then reports any later
+    comment on that thread under the ``assign`` reason. Treating it as a
+    request would start /implement behind a gate the pipeline is waiting at.
+    """
+    subject_url = notification.get("subject", {}).get("url", "")
+    if not (instance_dir and subject_url):
+        return False
+    from app.handle_state import tracks_issue
+
+    try:
+        return tracks_issue(instance_dir, api_url_to_web_url(subject_url))
+    except RuntimeError as e:
+        # Best-effort, like the autoreview guard: an unreadable /handle state
+        # must not break the assignment path for every other issue.
+        log.error("GitHub assign: /handle state unreadable, not skipping: %s", e)
+        return False
+
+
 def _try_assignment_notification(
     notification: dict,
     registry: SkillRegistry,
@@ -1148,6 +1169,15 @@ def _try_assignment_notification(
         return False
 
     project_name, owner, repo = project_info
+
+    if reason == "assign" and _handle_carries_issue(notification, instance_dir):
+        log.info(
+            "GitHub assign: %s/%s issue is carried by /handle — not queuing /implement",
+            owner, repo,
+        )
+        mark_notification_read(notif_id)
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+        return True
 
     # One API call: subject state/merged (closed check) + head SHA (dedup key).
     #

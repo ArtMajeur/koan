@@ -125,6 +125,18 @@ def tracks_mission(instance_dir: str, mission_title: str) -> bool:
     )
 
 
+def tracks_issue(instance_dir: str, issue_url: str) -> bool:
+    """True when a /handle pipeline was started on *issue_url*, whatever its phase.
+
+    The pipeline assigns the bot to its issue, so that assignment is never a
+    request to implement — not at a gate, and not once the PR is handed off.
+    """
+    if not _state_path(instance_dir).exists():
+        return False
+    wanted = issue_url.rstrip("/").lower()
+    return any(url.rstrip("/").lower() == wanted for url in _read_all(instance_dir))
+
+
 def mission_line(project_name: str, command: str) -> str:
     """A pending-mission line for *command*, tagged with its project."""
     tag = f"[project:{project_name}] " if project_name else ""

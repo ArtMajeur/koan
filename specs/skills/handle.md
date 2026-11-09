@@ -205,6 +205,13 @@ resumes once someone has replied in either thread.
   `after:` tag.
 - **Autoreview guard:** best-effort — an unreadable state file is logged and autoreview
   proceeds, like the CI relay.
+- **Assignment fallback:** `github_command_handler._try_assignment_notification` never
+  queues `/implement` for an `assign` notification on an issue that has a `/handle` record,
+  whatever its phase (`handle_state.tracks_issue`). The pipeline assigns the bot itself, and
+  GitHub then reports later activity on the thread — any comment — under the `assign`
+  reason: without the guard, the first comment on a gated issue starts `/implement` behind
+  the gate. Only `@<bot> handle` moves such an issue. Best-effort like the autoreview guard:
+  an unreadable state file is logged and the fallback proceeds.
 - **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`.
 - **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue an
   active `/handle` pipeline tracks (`handle_state.tracks_mission`): a second review/fix

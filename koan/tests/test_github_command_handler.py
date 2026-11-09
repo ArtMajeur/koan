@@ -3693,6 +3693,57 @@ class TestTryAssignmentNotification:
         content = missions_path.read_text()
         assert content.count("/implement https://github.com/sukria/koan/issues/55") == 1
 
+    def _assign_on_handled_issue(self, notification, registry, tmp_path, monkeypatch):
+        """Run the assign fallback with empty missions; return the missions text."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True, exist_ok=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read") as mark_read:
+            result = _try_assignment_notification(notification, registry, {})
+
+        assert result is True
+        mark_read.assert_called_with("77002")
+        return missions_path.read_text()
+
+    @pytest.mark.parametrize("phase", ["waiting_human", "planning", "done", "stopped"])
+    def test_assign_on_an_issue_handle_carries_does_not_queue_implement(
+        self, assign_notification, review_registry, tmp_path, monkeypatch, phase,
+    ):
+        """/handle assigns the bot itself, and GitHub then reports any comment
+        on the issue as `assign`: a comment on a gated issue must not start
+        /implement behind the gate."""
+        from app import handle_state
+
+        handle_state.update_record(
+            str(tmp_path / "instance"), "https://github.com/Sukria/koan/issues/55", phase=phase,
+        )
+
+        content = self._assign_on_handled_issue(
+            assign_notification, review_registry, tmp_path, monkeypatch,
+        )
+
+        assert "/implement" not in content
+        assert assign_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+
+    def test_assign_still_queues_implement_when_handle_state_is_unreadable(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        from app import handle_state
+
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / handle_state.STATE_FILENAME).write_text("{not json")
+
+        content = self._assign_on_handled_issue(
+            assign_notification, review_registry, tmp_path, monkeypatch,
+        )
+
+        assert "/implement https://github.com/sukria/koan/issues/55" in content
+
     def test_irrelevant_reason_returns_false(self, review_registry):
         """Notifications with non-assignment reasons are ignored."""
         notif = {"reason": "mention", "id": "1"}
