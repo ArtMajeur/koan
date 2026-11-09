@@ -120,7 +120,7 @@ def pipeline(tmp_path, monkeypatch):
     monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
     fake = FakeGitHub()
     config = {
-        "max_review_rounds": 3, "poll_minutes": 5, "max_polls": 2,
+        "max_review_rounds": 3, "poll_minutes": 5, "max_polls": 2, "ready_before_ci": False,
         "board": {}, "product_team": "",
         "qa": {"command": "", "preview_environment": "", "max_wait_ticks": 2, "wait_minutes": 5},
     }
@@ -276,11 +276,20 @@ class TestQueueStep:
 
     def test_follow_up_not_duplicated_in_pending(self, tmp_path):
         missions = tmp_path / "missions.md"
-        missions.write_text(f"# Missions\n\n## Pending\n\n- [project:proj] /handle {ISSUE}\n\n## Done\n")
+        missions.write_text(
+            f"# Missions\n\n## Pending\n\n- [project:proj] /handle {ISSUE} after:plan\n\n## Done\n")
         handle_state.queue_step(str(tmp_path), "proj", ISSUE, f"- [project:proj] /plan {ISSUE}", "plan")
         from app.missions import parse_sections
         handles = [p for p in parse_sections(missions.read_text())["pending"] if "/handle" in p]
         assert len(handles) == 1
+
+    def test_human_poke_is_not_swallowed_by_a_pending_chained_tick(self, tmp_path):
+        from app.utils import insert_pending_mission
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            f"# Missions\n\n## Pending\n\n- [project:proj] /handle {ISSUE} after:ci-poll\n\n## Done\n")
+        assert insert_pending_mission(missions, f"- [project:proj] /handle {ISSUE} 📬") is True
+        assert insert_pending_mission(missions, f"- [project:proj] /handle {ISSUE}") is False
 
     def test_regular_dedup_still_blocks_human_retrigger(self, tmp_path):
         from app.utils import insert_pending_mission
@@ -449,7 +458,40 @@ class TestPlanGate:
         assert f"/plan {ISSUE}" in pipeline.pending()[0]
 
 
+class TestPokeDuringAStep:
+    def test_poke_while_the_step_is_queued_replies_busy(self, pipeline):
+        pipeline.seed(phase="planning", phase_started_at=time.time())
+        handle_state.queue_step(pipeline.instance_dir, "proj", ISSUE,
+                                f"- [project:proj] /plan {ISSUE}", "plan")
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+        assert "current step: planning" in pipeline.github.posted[0]
+
+    def test_poke_after_the_step_was_lost_reevaluates(self, pipeline):
+        pipeline.seed(phase="planning", phase_started_at=time.time())
+        pipeline.run()
+        assert pipeline.record()["resume"] == "plan"
+
+
 class TestImplement:
+    def test_draft_pr_is_marked_ready_before_ci_when_configured(self, pipeline):
+        pipeline.cfg["ready_before_ci"] = True
+        pipeline.seed(phase="implementing", phase_started_at=100.0)
+        pipeline.github.open_pr = {"url": PR, "number": 12, "headRefOid": HEAD, "updated_at": 200.0}
+        pipeline.github.ci_state = "pending"
+        with patch.object(handle_runner.gh, "mark_ready") as mark_ready:
+            pipeline.run(after="implement")
+        mark_ready.assert_called_once_with("owner", "repo", "12")
+        assert pipeline.record()["phase"] == "ci"
+
+    def test_draft_stays_draft_by_default(self, pipeline):
+        pipeline.seed(phase="implementing", phase_started_at=100.0)
+        pipeline.github.open_pr = {"url": PR, "number": 12, "headRefOid": HEAD, "updated_at": 200.0}
+        pipeline.github.ci_state = "pending"
+        with patch.object(handle_runner.gh, "mark_ready") as mark_ready:
+            pipeline.run(after="implement")
+        mark_ready.assert_not_called()
+
     def test_fresh_pr_registers_ci(self, pipeline):
         pipeline.seed(phase="implementing", phase_started_at=100.0)
         pipeline.github.open_pr = {"url": PR, "number": 12, "headRefOid": HEAD, "updated_at": 200.0}

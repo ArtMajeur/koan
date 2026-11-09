@@ -350,6 +350,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "max_review_rounds": "int",
         "poll_minutes": "int",
         "max_polls": "int",
+        "ready_before_ci": "bool",
         "board": "dict",
         "product_team": "str",
         "qa": "dict",

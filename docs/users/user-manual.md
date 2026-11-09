@@ -595,6 +595,7 @@ handle:
   max_review_rounds: 3               # fix rounds after a blocking review (so up to 4 reviews)
   poll_minutes: 5                    # CI re-check interval when no ## CI relay will fire
   max_polls: 12
+  ready_before_ci: false             # true: leave draft before CI (for CIs that skip draft PRs)
   product_team: my-product-team      # org team slug; its members get the product column
   board:                             # organization Projects (v2) board; token needs `project` scope
     owner: my-org

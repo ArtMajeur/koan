@@ -69,6 +69,10 @@ therefore re-reads the branch runs, keeps those of the PR head, and decides:
 | failure still owned by `/ci_check` (in `## CI`, or no exhausted outcome relayed) | register and wait |
 | failure after the queue gave up, or blocked on approval | gate |
 
+Entering `ci` with `ready_before_ci: true` first takes a draft PR out of draft (a failure
+gates): for a CI that skips drafts, a draft would otherwise read as "no CI" and the
+review/fix loop would run without it. The default keeps the PR a draft until hand-off.
+
 The hand-off states the head's CI as read at that moment ("green", "no CI ran", or the
 state) — it never asserts green from an earlier signal.
 
@@ -78,7 +82,7 @@ state) — it never asserts green from an earlier signal.
 |---|---|---|---|
 | issue URL | command arg | yes | a PR URL tracked by `/handle` resolves to its issue; the API's `html_url` is the canonical key |
 | `after:<step>` | command arg | no | set by the pipeline only; marks a chained tick |
-| `handle:` | `config.yaml` | no | `max_review_rounds`, `poll_minutes`, `max_polls`, `board`, `product_team`, `qa` |
+| `handle:` | `config.yaml` | no | `max_review_rounds`, `poll_minutes`, `max_polls`, `ready_before_ci`, `board`, `product_team`, `qa` |
 
 ## Outputs / side effects
 
@@ -110,6 +114,11 @@ state) — it never asserts green from an earlier signal.
 - **Dedup against Pending only.** The running `/handle` is In Progress while it queues its
   own follow-up; the regular dedup (Pending + In Progress) would drop it. The follow-up is
   deduplicated against Pending only. Human and relay `/handle` lines keep the regular dedup.
+- **A chained tick and a human poke are different requests.** The `/handle` dedup
+  signature includes the `after:<step>` tag, so a pending leftover tick never swallows a
+  human `@bot handle`. A poke in a step phase (`planning`, `implementing`, `reviewing`,
+  `fixing`, `qa_running`) answers "busy" while that step's follow-up is still queued, and
+  re-evaluates only once it is gone (a lost step).
 - **CI relay.** `ci_queue_runner.drain_one()` relays every *terminal* outcome (`success`,
   `failure` after the last attempt, `none`, `blocked_approval`, PR closed/merged) for a PR
   whose record is in phase `ci`. It only wakes the tick; the tick re-reads the head's runs.
@@ -157,7 +166,8 @@ state) — it never asserts green from an earlier signal.
   best-effort: a failure is logged and the pipeline continues.
 - Nothing instance-specific lives in code: board, team, QA command and preview
   environment pattern (`{pr}` is the only placeholder) come from `handle:` in `config.yaml`.
-- The PR stays a draft until the hand-off; `/handle` never merges.
+- The PR stays a draft until the hand-off (or until CI, with `ready_before_ci`);
+  `/handle` never merges.
 - The triage's free text (summary, questions) goes through `leak_detector` before it
   is posted: its prompt carries text any issue participant wrote, and the model can read files.
 
@@ -199,6 +209,8 @@ state) — it never asserts green from an earlier signal.
   repository; an issue tracked in another repo than the code gates as "no PR".
 - A preview deployment is matched on the PR head or its merge commit; a deployment keyed
   on another SHA never reads as ready and the hand-off says the preview was not ready.
-- Bot logins are compared case-insensitively, folding only gh's `app/<slug>` spelling to
-  REST's `<slug>[bot]` — a user and an App of the same name never match. Running Kōan as
-  a GitHub App therefore needs `github.nickname: <slug>[bot]`; untested against a real App.
+- Kōan must run as a **user account**: mention commands (`parse_mention_command`,
+  `latest_handle_mention`) match `@<github.nickname>`, which an App identity — login
+  `<slug>[bot]`, mentioned as `@<slug>` — never matches. Login comparisons fold only gh's
+  `app/<slug>` spelling to REST's `<slug>[bot]`, so a user and an App of the same name
+  never match.

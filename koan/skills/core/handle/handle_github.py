@@ -180,6 +180,11 @@ def pr_info(owner: str, repo: str, number: str) -> dict:
     return data
 
 
+def mark_ready(owner: str, repo: str, number: str) -> None:
+    """Take the PR out of draft; raises, because CI may depend on it."""
+    run_gh("pr", "ready", number, "--repo", f"{owner}/{repo}")
+
+
 def hand_off_pr(owner: str, repo: str, number: str, reviewer: str) -> None:
     """Take the PR out of draft and ask *reviewer* for a review (best-effort)."""
     try:

@@ -2548,6 +2548,9 @@ _GITHUB_ACTION_RE = re.compile(
 )
 
 
+_HANDLE_AFTER_RE = re.compile(r"^\s*after:(\S+)")
+
+
 def _extract_mission_signature(text: str) -> Optional[str]:
     """Extract a normalized signature from a mission line for dedup.
 
@@ -2561,6 +2564,13 @@ def _extract_mission_signature(text: str) -> Optional[str]:
     if match:
         command = match.group(1)
         url = match.group(2).rstrip("/)")  # strip trailing paren or slash
+        if command == "handle":
+            # A chained /handle tick (`after:<step>`) and a human poke are
+            # different requests: a pending leftover tick must not swallow a
+            # human `@bot handle` as its duplicate.
+            after = _HANDLE_AFTER_RE.search(text[match.end():])
+            if after:
+                return f"{command}:{url}:after:{after.group(1)}"
         return f"{command}:{url}"
     return None
 

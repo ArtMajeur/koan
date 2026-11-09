@@ -220,6 +220,10 @@ def _dispatch(tick: Tick) -> Result:
         return True, f"Stale after:{tick.after} tick ignored in phase {phase or 'new'}"
     if phase in ("done", "stopped"):
         return _reenter(tick)
+    if not tick.chained and phase in _STEP_PHASES and _follow_up_pending(tick, phase):
+        # The step is queued or running and its own tick will judge it; a poke
+        # evaluating it now would read "no output" and gate by mistake.
+        return _waiting(tick, phase)
     if tick.record.get("pr_number"):
         state = _pr(tick)["state"]
         if state in _TERMINAL_PR_STATES:
@@ -354,6 +358,10 @@ def _after_implement(tick: Tick) -> Result:
 
 
 def _await_ci(tick: Tick) -> Result:
+    if tick.config["ready_before_ci"] and _pr(tick).get("isDraft"):
+        # Some CIs skip draft PRs: without this the loop would review and fix
+        # a PR whose CI never ran.
+        gh.mark_ready(tick.owner, tick.repo, tick.record["pr_number"])
     tick.save(phase="ci", ci_outcome=None, ci_polls=0, ci_empty_checks=0,
               phase_started_at=time.time(), resume=None)
     return _after_ci(tick)
@@ -577,6 +585,16 @@ def _schedule_tick(tick: Tick, minutes: int, after: str) -> datetime:
     return run_at
 
 
+def _follow_up_pending(tick: Tick, phase: str) -> bool:
+    """True while the tick chained after this phase's step is still queued."""
+    from app.missions import parse_sections
+
+    path = Path(tick.instance_dir) / "missions.md"
+    pending = parse_sections(path.read_text()).get("pending", []) if path.exists() else []
+    needles = [f"/handle {tick.issue_url} after:{a}" for a in _EXPECTED_AFTER[phase]]
+    return any(needle in line for line in pending for needle in needles)
+
+
 def _recheck_pending(tick: Tick, after: str) -> bool:
     """True when a human poke should wait: a re-check event is still scheduled.
 
@@ -613,6 +631,9 @@ _EXPECTED_AFTER: Dict[str, Tuple[str, ...]] = {
     "qa": ("qa-wait",),
     "qa_running": ("qa",),
 }
+
+# Phases waiting on a queued step mission whose follow-up tick will judge it.
+_STEP_PHASES = ("planning", "implementing", "reviewing", "fixing", "qa_running")
 
 _PHASES: Dict[str, Callable[[Tick], Result]] = {
     "triage": _triage,
