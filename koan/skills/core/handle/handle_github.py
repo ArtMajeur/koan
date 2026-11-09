@@ -68,18 +68,24 @@ def fetch_comments(owner: str, repo: str, number: str) -> List[dict]:
     return comments
 
 
-def same_login(a: str, b: str) -> bool:
-    """Compare GitHub logins as gh reports them for users and GitHub Apps.
+def _canonical_login(login: str) -> str:
+    """gh writes a GitHub App's login ``app/<slug>``; REST writes ``<slug>[bot]``.
 
-    An App shows up as ``app/<slug>`` (gh) or ``<slug>[bot]`` (REST), while
-    ``github.nickname`` holds the bare name.
+    Only that spelling difference is folded. A user ``x`` and an App ``x[bot]``
+    are different accounts and must never compare equal.
     """
-    def _bare(login: str) -> str:
-        login = (login or "").strip().lower()
-        login = login[len("app/"):] if login.startswith("app/") else login
-        return login[: -len("[bot]")] if login.endswith("[bot]") else login
+    login = (login or "").strip().lower()
+    return f"{login[len('app/'):]}[bot]" if login.startswith("app/") else login
 
-    return bool(_bare(a)) and _bare(a) == _bare(b)
+
+def same_login(a: str, b: str) -> bool:
+    """Case-insensitive login equality across gh's and REST's App spellings.
+
+    When Kōan runs as a GitHub App, ``github.nickname`` must hold the App's
+    real login (``<slug>[bot]``), not the bare slug.
+    """
+    canonical = _canonical_login(a)
+    return bool(canonical) and canonical == _canonical_login(b)
 
 
 def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:

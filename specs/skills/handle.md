@@ -199,5 +199,6 @@ state) — it never asserts green from an earlier signal.
   repository; an issue tracked in another repo than the code gates as "no PR".
 - A preview deployment is matched on the PR head or its merge commit; a deployment keyed
   on another SHA never reads as ready and the hand-off says the preview was not ready.
-- Bot logins are compared case-insensitively and with GitHub App forms (`app/<slug>`,
-  `<slug>[bot]`) folded to the bare name; this is untested against a real App identity.
+- Bot logins are compared case-insensitively, folding only gh's `app/<slug>` spelling to
+  REST's `<slug>[bot]` — a user and an App of the same name never match. Running Kōan as
+  a GitHub App therefore needs `github.nickname: <slug>[bot]`; untested against a real App.

@@ -796,10 +796,18 @@ class TestEntryPoints:
 
 
 class TestSameLogin:
-    @pytest.mark.parametrize("login", ["koan-bot", "KOAN-BOT", "app/koan-bot", "koan-bot[bot]"])
-    def test_user_and_app_forms_match(self, login):
+    def test_case_insensitive(self):
         from skills.core.handle.handle_github import same_login
-        assert same_login(login, BOT)
+        assert same_login("KOAN-BOT", BOT)
+
+    def test_gh_and_rest_app_spellings_match(self):
+        from skills.core.handle.handle_github import same_login
+        assert same_login("app/koan-bot", "koan-bot[bot]")
+
+    @pytest.mark.parametrize("login", ["koan-bot[bot]", "app/koan-bot"])
+    def test_an_app_never_passes_for_the_user_of_the_same_name(self, login):
+        from skills.core.handle.handle_github import same_login
+        assert not same_login(login, BOT)
 
     def test_empty_never_matches(self):
         from skills.core.handle.handle_github import same_login
