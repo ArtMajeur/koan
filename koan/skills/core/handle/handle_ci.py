@@ -9,6 +9,8 @@ those of the current head.
 
 from pathlib import Path
 
+from app.handle_state import same_pr_url
+
 
 def ci_at_head(branch: str, full_repo: str, head_sha: str) -> str:
     """Return the CI state of *head_sha* on *branch*.
@@ -36,26 +38,26 @@ def in_ci_queue(instance_dir: str, pr_url: str) -> bool:
 
     path = Path(instance_dir) / "missions.md"
     content = path.read_text() if path.exists() else ""
-    wanted = pr_url.rstrip("/").lower()
-    return any(item["pr_url"].rstrip("/").lower() == wanted for item in get_ci_items(content))
+    return any(same_pr_url(item["pr_url"], pr_url) for item in get_ci_items(content))
 
 
 def register(instance_dir: str, project_name: str, record: dict, full_repo: str) -> None:
     """Put the record's PR in the ``## CI`` queue unless it is already there.
 
     Skipping an existing entry keeps its fix-attempt counter: ``add_ci_item``
-    would reset it.
+    would reset it. The check runs inside the locked write.
     """
-    from app.missions import add_ci_item
+    from app.missions import add_ci_item, get_ci_items
     from app.utils import load_config, modify_missions_file
 
-    if in_ci_queue(instance_dir, record["pr_url"]):
-        return
     max_attempts = load_config().get("ci_fix_max_attempts", 5)
-    modify_missions_file(
-        Path(instance_dir) / "missions.md",
-        lambda c: add_ci_item(
-            c, project_name, record["pr_url"], record["pr_number"],
+
+    def _transform(content: str) -> str:
+        if any(same_pr_url(item["pr_url"], record["pr_url"]) for item in get_ci_items(content)):
+            return content
+        return add_ci_item(
+            content, project_name, record["pr_url"], record["pr_number"],
             record["branch"], full_repo, max_attempts,
-        ),
-    )
+        )
+
+    modify_missions_file(Path(instance_dir) / "missions.md", _transform)

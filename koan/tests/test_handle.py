@@ -94,7 +94,7 @@ class FakeGitHub:
     def merge_commit_sha(self, owner, repo, number):
         return "merge456"
 
-    def hand_off_pr(self, owner, repo, number, reviewer):
+    def hand_off_pr(self, owner, repo, number, reviewer, is_draft):
         self.handed_off.append((number, reviewer))
 
     def preview_status(self, owner, repo, environment, shas):
@@ -267,7 +267,7 @@ class TestQueueStep:
             f"- [project:proj] /handle {ISSUE}\n\n## Done\n"
         )
         queued = handle_state.queue_step(
-            str(tmp_path), "proj", ISSUE, f"- [project:proj] /plan {ISSUE}", "plan",
+            str(tmp_path), "proj", ISSUE, f"/plan {ISSUE}", "plan",
         )
         from app.missions import parse_sections
         pending = parse_sections(missions.read_text())["pending"]
@@ -278,7 +278,7 @@ class TestQueueStep:
         missions = tmp_path / "missions.md"
         missions.write_text(
             f"# Missions\n\n## Pending\n\n- [project:proj] /handle {ISSUE} after:plan\n\n## Done\n")
-        handle_state.queue_step(str(tmp_path), "proj", ISSUE, f"- [project:proj] /plan {ISSUE}", "plan")
+        handle_state.queue_step(str(tmp_path), "proj", ISSUE, f"/plan {ISSUE}", "plan")
         from app.missions import parse_sections
         handles = [p for p in parse_sections(missions.read_text())["pending"] if "/handle" in p]
         assert len(handles) == 1
@@ -462,7 +462,7 @@ class TestPokeDuringAStep:
     def test_poke_while_the_step_is_queued_replies_busy(self, pipeline):
         pipeline.seed(phase="planning", phase_started_at=time.time())
         handle_state.queue_step(pipeline.instance_dir, "proj", ISSUE,
-                                f"- [project:proj] /plan {ISSUE}", "plan")
+                                f"/plan {ISSUE}", "plan")
         pipeline.run()
         assert pipeline.record()["phase"] == "planning"
         assert "current step: planning" in pipeline.github.posted[0]
@@ -923,6 +923,13 @@ class TestFindOpenPr:
         with patch.object(handle_github, "run_gh", return_value=self._listing(BOT.upper(), "OWNER")):
             pr = handle_github.find_open_pr("owner", "repo", "koan/implement-7", BOT)
         assert pr["url"] == PR and pr["updated_at"] > 0
+
+
+class TestMessages:
+    def test_every_language_has_every_template(self):
+        from skills.core.handle.handle_messages import _TEMPLATES
+        keys = {language: set(templates) for language, templates in _TEMPLATES.items()}
+        assert all(k == keys["english"] for k in keys.values())
 
 
 class TestTriageTimeouts:

@@ -53,6 +53,7 @@ class Tick:
     issue: dict = field(default_factory=dict)
     comments: List[dict] = field(default_factory=list)
     requester: str = ""
+    pr_view: Optional[dict] = field(default=None, repr=False)
 
     @property
     def chained(self) -> bool:
@@ -65,7 +66,15 @@ class Tick:
 
     @property
     def mention(self) -> str:
-        return f"@{self.requester}: " if self.requester else ""
+        return _mention(self.requester)
+
+    @property
+    def pr_url(self) -> str:
+        return self.record["pr_url"]
+
+    @property
+    def pr_number(self) -> str:
+        return self.record["pr_number"]
 
     def save(self, **changes) -> None:
         self.record = handle_state.update_record(self.instance_dir, self.issue_url, **changes)
@@ -76,9 +85,10 @@ class Tick:
             render(key, mention=self.mention, bot=self.bot, **values),
         )
 
-    def entry(self, command: str) -> str:
-        tag = f"[project:{self.project_name}] " if self.project_name else ""
-        return f"- {tag}{command}"
+
+
+def _mention(login: str) -> str:
+    return f"@{login}: " if login else ""
 
 
 # -- entry point ------------------------------------------------------------
@@ -112,9 +122,10 @@ def run_handle(
 
 
 def _bot_login() -> str:
+    from app.github_config import get_github_nickname
     from app.utils import load_config
 
-    return str((load_config().get("github") or {}).get("nickname", "")).strip()
+    return get_github_nickname(load_config())
 
 
 def _issue_for_pr(owner: str, repo: str, number: str, instance_dir: str, bot: str) -> str:
@@ -198,7 +209,7 @@ def _fail(
         phase = record.get("phase", "")
         requester = record.get("requester", "")
         gh.post_comment(*target, render(
-            "error", mention=f"@{requester}: " if requester else "", bot=bot,
+            "error", mention=_mention(requester), bot=bot,
             phase=phase or "start", error=detail,
         ))
         if phase and phase != "waiting_human":  # keep a gate's own resume target
@@ -232,7 +243,14 @@ def _dispatch(tick: Tick) -> Result:
 
 
 def _pr(tick: Tick) -> dict:
-    return gh.pr_info(tick.owner, tick.repo, tick.record["pr_number"])
+    """The PR view, fetched once per tick: its head cannot move during a tick."""
+    if tick.pr_view is None:
+        tick.pr_view = gh.pr_info(tick.owner, tick.repo, tick.pr_number)
+    return tick.pr_view
+
+
+def _head_ci(tick: Tick) -> str:
+    return handle_ci.ci_at_head(tick.record["branch"], tick.full_repo, _pr(tick)["headRefOid"])
 
 
 # -- triage and plan ----------------------------------------------------------
@@ -241,7 +259,7 @@ def _pr(tick: Tick) -> dict:
 def _start(tick: Tick) -> Result:
     if tick.issue.get("is_pr"):
         return False, f"{tick.issue_url} is a pull request, not an issue"
-    tick.save(project=tick.project_name, phase="triage", started_at=time.time())
+    tick.save(project=tick.project_name, phase="triage")
     gh.assign_self(tick.owner, tick.repo, tick.number)
     _move_board(tick, "in_progress")
     return _triage(tick)
@@ -325,12 +343,7 @@ def _queue_plan(tick: Tick) -> Result:
 
 def _after_plan(tick: Tick) -> Result:
     since = tick.record.get("phase_started_at", 0)
-    plan = next(
-        (c for c in reversed(tick.comments)
-         if gh.same_login(c.get("author") or "", tick.bot)
-         and c["created_at"] >= since and has_plan(c.get("body") or "")),
-        None,
-    )
+    plan = gh.latest_bot_comment(tick.comments, tick.bot, since, match=has_plan)
     if plan is None:
         return _gate(tick, "plan_missing", "plan")
     if open_questions(plan["body"]):
@@ -361,7 +374,8 @@ def _await_ci(tick: Tick) -> Result:
     if tick.config["ready_before_ci"] and _pr(tick).get("isDraft"):
         # Some CIs skip draft PRs: without this the loop would review and fix
         # a PR whose CI never ran.
-        gh.mark_ready(tick.owner, tick.repo, tick.record["pr_number"])
+        gh.mark_ready(tick.owner, tick.repo, tick.pr_number)
+        tick.pr_view["isDraft"] = False
     tick.save(phase="ci", ci_outcome=None, ci_polls=0, ci_empty_checks=0,
               phase_started_at=time.time(), resume=None)
     return _after_ci(tick)
@@ -371,58 +385,52 @@ def _after_ci(tick: Tick) -> Result:
     """Decide from the PR head's own runs; the relay only wakes us up."""
     from app.config import is_ci_check_enabled
 
-    head = _pr(tick)["headRefOid"]
-    state = handle_ci.ci_at_head(tick.record["branch"], tick.full_repo, head)
+    state = _head_ci(tick)
     if state == "success":
         return _queue_review(tick)
+    if _recheck_pending(tick, "ci-poll"):
+        return _waiting(tick, "ci")  # a poke must not start a second poll chain
     if state in ("no_ci", "missing"):
         # No run for the head after one re-check: no CI for this commit
         # (path-filtered workflows, docs-only change), not a CI to wait for.
-        if _recheck_pending(tick, "ci-poll"):
-            return _waiting(tick, "ci")
-        if tick.record.get("ci_empty_checks", 0) >= 1:
+        if tick.record.get("ci_empty_checks"):
             return _queue_review(tick)
-        tick.save(ci_empty_checks=tick.record.get("ci_empty_checks", 0) + 1)
+        tick.save(ci_empty_checks=1)
         return _poll_ci(tick, state)
-    if state == "pending" and is_ci_check_enabled():
+    ci_check = is_ci_check_enabled()
+    if ci_check and (state == "pending" or (state == "failure" and _ci_fix_may_continue(tick))):
         handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.full_repo)
         return _waiting(tick, "ci")
     if state == "pending":
         return _poll_ci(tick, state)
-    if state == "failure" and is_ci_check_enabled() and _ci_fix_may_continue(tick):
-        handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.full_repo)
-        return _waiting(tick, "ci")
-    return _gate(tick, "ci_blocked", "ci", pr_url=tick.record["pr_url"], outcome=state)
+    return _gate(tick, "ci_blocked", "ci", pr_url=tick.pr_url, outcome=state)
 
 
 def _ci_fix_may_continue(tick: Tick) -> bool:
     """/ci_check still owns the failure unless the queue reported it exhausted."""
-    if handle_ci.in_ci_queue(tick.instance_dir, tick.record["pr_url"]):
+    if handle_ci.in_ci_queue(tick.instance_dir, tick.pr_url):
         return True
     return tick.record.get("ci_outcome") != "failure"
 
 
 def _poll_ci(tick: Tick, state: str) -> Result:
     """No relay will fire: check again later, a bounded number of times."""
-    if _recheck_pending(tick, "ci-poll"):
-        return _waiting(tick, "ci")  # a poke must not start a second poll chain
     polls = tick.record.get("ci_polls", 0)
     if polls >= tick.config["max_polls"]:
-        return _gate(tick, "ci_blocked", "ci", pr_url=tick.record["pr_url"], outcome=state)
+        return _gate(tick, "ci_blocked", "ci", pr_url=tick.pr_url, outcome=state)
     tick.save(ci_polls=polls + 1)
     _schedule_tick(tick, tick.config["poll_minutes"], "ci-poll")
     return _waiting(tick, "ci")
 
 
 def _queue_review(tick: Tick) -> Result:
-    return _queue(tick, f"/review {tick.record['pr_url']} --force", "review", "reviewing")
+    return _queue(tick, f"/review {tick.pr_url} --force", "review", "reviewing")
 
 
 def _after_review(tick: Tick) -> Result:
-    head = _pr(tick)["headRefOid"]
     since = tick.record.get("phase_started_at", 0)
-    lgtm = review_verdict(_review_sidecar(tick), since, head)
-    pr_url = tick.record["pr_url"]
+    lgtm = review_verdict(_review_sidecar(tick), since, _pr(tick)["headRefOid"])
+    pr_url = tick.pr_url
     if lgtm is None:
         return _gate(tick, "review_missing", "review", pr_url=pr_url)
     if lgtm:
@@ -436,7 +444,7 @@ def _after_review(tick: Tick) -> Result:
 def _review_sidecar(tick: Tick) -> Path:
     """The review runner's findings file; named with the PR URL's casing."""
     folder = Path(tick.instance_dir) / ".review-findings"
-    wanted = f"{tick.owner}_{tick.repo}_{tick.record['pr_number']}.json"
+    wanted = f"{tick.owner}_{tick.repo}_{tick.pr_number}.json"
     if folder.is_dir():
         for path in folder.iterdir():
             if path.name.lower() == wanted.lower():
@@ -446,7 +454,7 @@ def _review_sidecar(tick: Tick) -> Path:
 
 def _queue_fix(tick: Tick) -> Result:
     tick.save(review_round=tick.record.get("review_round", 0) + 1)
-    return _queue(tick, f"/rebase {tick.record['pr_url']} --fix", "fix", "fixing")
+    return _queue(tick, f"/rebase {tick.pr_url} --fix", "fix", "fixing")
 
 
 # -- QA and hand-off ------------------------------------------------------------
@@ -458,15 +466,15 @@ def _qa_or_finish(tick: Tick) -> Result:
         return _finish(tick, qa_note="")
     if tick.record.get("phase") == "qa" and _recheck_pending(tick, "qa-wait"):
         return _waiting(tick, "qa")  # a poke must not add a re-check or burn a wait
-    number = tick.record["pr_number"]
+    number = tick.pr_number
     shas = (_pr(tick)["headRefOid"], gh.merge_commit_sha(tick.owner, tick.repo, number))
     environment = qa["preview_environment"].replace("{pr}", number)
     status, url = gh.preview_status(tick.owner, tick.repo, environment, shas)
     if status == "ready":
         command = (
             f"{qa['command']} {url} Verify the fix for {tick.issue_url} on this preview "
-            f"of {tick.record['pr_url']}; post the report as a comment on "
-            f"{tick.record['pr_url']} whose first line is {QA_MARKER}"
+            f"of {tick.pr_url}; post the report as a comment on "
+            f"{tick.pr_url} whose first line is {QA_MARKER}"
         )
         return _queue(tick, command, "qa", "qa_running")
     if status == "failed":
@@ -486,15 +494,16 @@ def _wait_for_preview(tick: Tick) -> Result:
 
 def _after_qa(tick: Tick) -> Result:
     """Hand off; say whether the QA run left a report (it may have timed out)."""
-    comments = gh.fetch_comments(tick.owner, tick.repo, tick.record["pr_number"])
+    comments = gh.fetch_comments(tick.owner, tick.repo, tick.pr_number)
     since = tick.record.get("phase_started_at", 0)
-    report = gh.latest_bot_comment(comments, tick.bot, since, marker=QA_MARKER)
+    report = gh.latest_bot_comment(comments, tick.bot, since, match=lambda body: QA_MARKER in body)
     return _finish(tick, qa_note=render("qa_ran" if report else "qa_no_report"))
 
 
 def _finish(tick: Tick, qa_note: str) -> Result:
-    pr_url = tick.record["pr_url"]
-    gh.hand_off_pr(tick.owner, tick.repo, tick.record["pr_number"], _reviewer(tick))
+    pr_url = tick.pr_url
+    gh.hand_off_pr(tick.owner, tick.repo, tick.pr_number, _reviewer(tick),
+                   is_draft=bool(_pr(tick).get("isDraft")))
     product = gh.is_team_member(tick.owner, tick.config["product_team"], tick.requester)
     _move_board(tick, "product_review" if product else "review")
     tick.comment("done", pr_url=pr_url, ci_note=_ci_note(tick), qa_note=qa_note)
@@ -504,8 +513,7 @@ def _finish(tick: Tick, qa_note: str) -> Result:
 
 def _ci_note(tick: Tick) -> str:
     """State the head's CI as it is now, never as an assumption."""
-    head = _pr(tick)["headRefOid"]
-    state = handle_ci.ci_at_head(tick.record["branch"], tick.full_repo, head)
+    state = _head_ci(tick)
     if state == "success":
         return render("ci_green")
     if state in ("no_ci", "missing"):
@@ -524,17 +532,15 @@ def _reenter(tick: Tick) -> Result:
     """A human `handle` on a finished pipeline: another round, or a fresh start."""
     state = _pr(tick)["state"] if tick.record.get("pr_number") else "CLOSED"
     if state == "MERGED":
-        tick.comment("merged", pr_url=tick.record["pr_url"])
+        tick.comment("merged", pr_url=tick.pr_url)
         tick.save(phase="stopped")
-        return True, f"{tick.record['pr_url']} already merged"
+        return True, f"{tick.pr_url} already merged"
     if state == "CLOSED":
-        requester = tick.requester
-        handle_state.reset_record(tick.instance_dir, tick.issue_url)
-        tick.record = {}
-        if requester:
-            tick.save(requester=requester)
+        keep = {"requester": tick.requester} if tick.requester else {}
+        handle_state.reset_record(tick.instance_dir, tick.issue_url, **keep)
+        tick.record, tick.pr_view = dict(keep), None
         return _start(tick)
-    tick.comment("new_round", pr_url=tick.record["pr_url"])
+    tick.comment("new_round", pr_url=tick.pr_url)
     tick.save(review_round=0)
     _move_board(tick, "in_progress")
     return _queue_fix(tick)
@@ -564,15 +570,13 @@ def _replied_since_gate(tick: Tick) -> bool:
 
 
 def _stop(tick: Tick, state: str) -> Result:
-    tick.comment("stopped", pr_url=tick.record["pr_url"], state=render(f"state_{state}"))
+    tick.comment("stopped", pr_url=tick.pr_url, state=render(f"state_{state}"))
     tick.save(phase="stopped", resume=None)
-    return True, f"{tick.record['pr_url']} {state}; pipeline stopped"
+    return True, f"{tick.pr_url} {state}; pipeline stopped"
 
 
 def _queue(tick: Tick, command: str, after: str, phase: str) -> Result:
-    handle_state.queue_step(
-        tick.instance_dir, tick.project_name, tick.issue_url, tick.entry(command), after,
-    )
+    handle_state.queue_step(tick.instance_dir, tick.project_name, tick.issue_url, command, after)
     tick.save(phase=phase, phase_started_at=time.time(), resume=None)
     return True, f"Queued {command.split()[0]} for {tick.issue_url}"
 
@@ -603,12 +607,14 @@ def _schedule_tick(tick: Tick, minutes: int, after: str) -> datetime:
 
 def _follow_up_pending(tick: Tick, phase: str) -> bool:
     """True while the tick chained after this phase's step is still queued."""
-    from app.missions import parse_sections
+    from app.missions import is_duplicate_mission
 
     path = Path(tick.instance_dir) / "missions.md"
-    pending = parse_sections(path.read_text()).get("pending", []) if path.exists() else []
-    needles = [f"/handle {tick.issue_url} after:{a}" for a in _EXPECTED_AFTER[phase]]
-    return any(needle in line for line in pending for needle in needles)
+    content = path.read_text() if path.exists() else ""
+    return any(
+        is_duplicate_mission(content, handle_state.handle_entry(tick.project_name, tick.issue_url, a))
+        for a in _EXPECTED_AFTER[phase]
+    )
 
 
 def _recheck_pending(tick: Tick, after: str) -> bool:
@@ -631,9 +637,7 @@ def _recheck_pending(tick: Tick, after: str) -> bool:
 
 def _move_board(tick: Tick, column_key: str) -> None:
     board = tick.config["board"]
-    column = board.get(column_key) or ""
-    if board and column:
-        gh.move_on_board(board, tick.issue.get("node_id", ""), column)
+    gh.move_on_board(board, tick.issue.get("node_id", ""), board.get(column_key) or "")
 
 
 # The `after:` tags a chained tick may carry in each phase; any other chained
@@ -680,6 +684,7 @@ def main(argv: Optional[list] = None) -> None:
     parser.add_argument("--project-name", default="")
     parser.add_argument("--instance-dir", required=True)
     parser.add_argument("--context", default="")
+    # Emitted by the shared URL+context command builder; /handle has no use for it.
     parser.add_argument("--base-branch", default="")
     args = parser.parse_args(argv)
 

@@ -2548,7 +2548,10 @@ _GITHUB_ACTION_RE = re.compile(
 )
 
 
-_HANDLE_AFTER_RE = re.compile(r"^\s*after:(\S+)")
+# A continuation tag right after the URL marks a different request than the
+# bare command: a chained tick queued by a pipeline (e.g. `/handle <url>
+# after:plan`) must neither swallow nor be swallowed by a human-issued one.
+_CONTINUATION_TAG_RE = re.compile(r"^\s*after:(\S+)")
 
 
 def _extract_mission_signature(text: str) -> Optional[str]:
@@ -2564,30 +2567,21 @@ def _extract_mission_signature(text: str) -> Optional[str]:
     if match:
         command = match.group(1)
         url = match.group(2).rstrip("/)")  # strip trailing paren or slash
-        if command == "handle":
-            # A chained /handle tick (`after:<step>`) and a human poke are
-            # different requests: a pending leftover tick must not swallow a
-            # human `@bot handle` as its duplicate.
-            after = _HANDLE_AFTER_RE.search(text[match.end():])
-            if after:
-                return f"{command}:{url}:after:{after.group(1)}"
+        tag = _CONTINUATION_TAG_RE.search(text[match.end():])
+        if tag:
+            return f"{command}:{url}:after:{tag.group(1)}"
         return f"{command}:{url}"
     return None
 
 
-def is_duplicate_mission(
-    content: str, new_entry: str, *, pending_only: bool = False,
-) -> bool:
+def is_duplicate_mission(content: str, new_entry: str) -> bool:
     """Check if a mission with the same action signature already exists.
 
-    Checks both Pending and In Progress sections, or Pending alone when
-    *pending_only* is set — used by a running mission that queues its own
-    follow-up, which the In Progress copy of itself would otherwise block.
+    Checks both Pending and In Progress sections.
 
     Args:
         content: Full missions.md content.
         new_entry: The mission entry about to be inserted.
-        pending_only: Ignore the In Progress section.
 
     Returns:
         True if a duplicate exists, False otherwise.
@@ -2597,9 +2591,7 @@ def is_duplicate_mission(
         return False
 
     sections = parse_sections(content)
-    existing = list(sections.get("pending", []))
-    if not pending_only:
-        existing += sections.get("in_progress", [])
+    existing = sections.get("pending", []) + sections.get("in_progress", [])
 
     for item in existing:
         item_sig = _extract_mission_signature(item)

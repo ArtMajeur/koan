@@ -8,7 +8,7 @@ import json
 import re
 import sys
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 from urllib.parse import quote
 
 from app.github import api, run_gh
@@ -117,13 +117,14 @@ def is_authorized(owner: str, repo: str, login: str, project_name: str) -> bool:
 
 
 def latest_bot_comment(
-    comments: List[dict], bot: str, since: float, marker: str = "",
+    comments: List[dict], bot: str, since: float,
+    match: Callable[[str], bool] = lambda body: True,
 ) -> Optional[dict]:
-    """Newest comment by *bot* at or after *since* (containing *marker*, if given)."""
+    """Newest comment by *bot* at or after *since* whose body satisfies *match*."""
     for comment in reversed(comments):
         if (same_login(comment.get("author") or "", bot)
                 and comment["created_at"] >= since
-                and marker in (comment.get("body") or "")):
+                and match(comment.get("body") or "")):
             return comment
     return None
 
@@ -185,12 +186,13 @@ def mark_ready(owner: str, repo: str, number: str) -> None:
     run_gh("pr", "ready", number, "--repo", f"{owner}/{repo}")
 
 
-def hand_off_pr(owner: str, repo: str, number: str, reviewer: str) -> None:
+def hand_off_pr(owner: str, repo: str, number: str, reviewer: str, is_draft: bool) -> None:
     """Take the PR out of draft and ask *reviewer* for a review (best-effort)."""
-    try:
-        run_gh("pr", "ready", number, "--repo", f"{owner}/{repo}")
-    except RuntimeError as e:
-        _log(f"marking PR {number} ready failed: {e}")
+    if is_draft:
+        try:
+            mark_ready(owner, repo, number)
+        except RuntimeError as e:
+            _log(f"marking PR {number} ready failed: {e}")
     if reviewer:
         try:
             run_gh("pr", "edit", number, "--repo", f"{owner}/{repo}", "--add-reviewer", reviewer)

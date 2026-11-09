@@ -111,12 +111,12 @@ state) — it never asserts green from an earlier signal.
 - **Continuation without self-mention.** The follow-up tick is inserted right after the
   step it waits for, in one locked write. The queue is FIFO with one slot, so the tick runs
   after the step finished (success or failure).
-- **Dedup against Pending only.** The running `/handle` is In Progress while it queues its
-  own follow-up; the regular dedup (Pending + In Progress) would drop it. The follow-up is
-  deduplicated against Pending only. Human and relay `/handle` lines keep the regular dedup.
-- **A chained tick and a human poke are different requests.** The `/handle` dedup
-  signature includes the `after:<step>` tag, so a pending leftover tick never swallows a
-  human `@bot handle`. A poke in a step phase (`planning`, `implementing`, `reviewing`,
+- **A chained tick and a human poke are different requests.** The mission dedup
+  signature includes a continuation tag (`after:<step>`) placed right after the URL, for
+  any command. The running `/handle` is In Progress while it queues its own follow-up; the
+  follow-up's tag gives it a different signature, so the regular dedup (Pending + In
+  Progress) never drops it, and a pending leftover tick never swallows a human
+  `@bot handle`. A poke in a step phase (`planning`, `implementing`, `reviewing`,
   `fixing`, `qa_running`) answers "busy" while that step's follow-up is still queued, and
   re-evaluates only once it is gone (a lost step).
 - **CI relay.** `ci_queue_runner.drain_one()` relays every *terminal* outcome (`success`,
