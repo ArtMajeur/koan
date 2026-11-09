@@ -677,9 +677,12 @@ def _move_board(tick: Tick, column_key: str) -> None:
     column = board.get(column_key) or ""
     error = gh.move_on_board(board, tick.issue.get("node_id", ""), column)
     if error:
+        from app.leak_detector import scan_and_redact
+
         # Only the container's stderr saw these failures, so the board went
         # stale without anyone noticing.
-        tick.comment("board_move_failed", column=column, error=error)
+        detail = scan_and_redact(error[:300], "/handle board comment")
+        tick.comment("board_move_failed", column=column, error=detail)
 
 
 # The `after:` tags a chained tick may carry in each phase; any other chained
