@@ -78,6 +78,8 @@ COPY instance.example/ /app/instance.example/
 COPY Makefile /app/
 COPY docs/ /app/docs/
 COPY projects.example.yaml /app/
+# Read by app/version.py to name the release, since the image has no git tags
+COPY CHANGES.md /app/
 
 # Supervisor config + restart-delay wrapper
 COPY koan/docker/supervisord.conf /etc/supervisord.conf

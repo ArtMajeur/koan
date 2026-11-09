@@ -1220,6 +1220,12 @@ class TestCheckGithubNotifications:
 # _get_version()
 # ---------------------------------------------------------------------------
 
+def _no_version_fallback(monkeypatch, tmp_path):
+    """Hide the no-git fallbacks (Railway env, the repo's CHANGES.md)."""
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    monkeypatch.setattr("app.version._CHANGES_MD", tmp_path / "missing.md")
+
+
 class TestGetVersion:
     """Test the _get_version() helper."""
 
@@ -1237,16 +1243,18 @@ class TestGetVersion:
         with patch("subprocess.run", return_value=mock_result):
             assert _get_version() == "v0.73@7754a635 +17"
 
-    def test_git_failure_returns_empty(self):
+    def test_git_failure_returns_empty(self, monkeypatch, tmp_path):
         """git describe failure returns empty string."""
         from skills.core.status.handler import _get_version
+        _no_version_fallback(monkeypatch, tmp_path)
         mock_result = MagicMock(returncode=128, stdout="")
         with patch("subprocess.run", return_value=mock_result):
             assert _get_version() == ""
 
-    def test_exception_returns_empty(self):
+    def test_exception_returns_empty(self, monkeypatch, tmp_path):
         """Subprocess exception returns empty string."""
         from skills.core.status.handler import _get_version
+        _no_version_fallback(monkeypatch, tmp_path)
         with patch("subprocess.run", side_effect=FileNotFoundError):
             assert _get_version() == ""
 
