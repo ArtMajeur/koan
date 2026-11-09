@@ -1133,6 +1133,18 @@ def _notify_mission_normal(
         )
         return False
 
+    # Same for a tick a pipeline queued for itself (`/handle <url> after:<step>`):
+    # one "Done" line per tick would bury the steps' own outcome messages. What
+    # needs a human reaches them as a comment on the issue.
+    from app.missions import is_continuation_mission
+    if is_continuation_mission(title):
+        from app.run_log import log_safe
+        log_safe(
+            "mission",
+            f"[{project_name}] Done: {title} (normal mode, pipeline tick suppressed)",
+        )
+        return False
+
     # A runner that reported gave its final URL (possibly none). Otherwise prefer
     # the URL captured during post-mission processing (before pending.md was
     # deleted); fall back to a best-effort re-read.

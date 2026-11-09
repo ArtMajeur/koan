@@ -2574,6 +2574,12 @@ def _extract_mission_signature(text: str) -> Optional[str]:
     return None
 
 
+def is_continuation_mission(text: str) -> bool:
+    """True when *text* is a tick a pipeline queued for itself (``after:<step>``)."""
+    match = _GITHUB_ACTION_RE.search(text)
+    return bool(match and _CONTINUATION_TAG_RE.search(text[match.end():]))
+
+
 def is_duplicate_mission(content: str, new_entry: str) -> bool:
     """Check if a mission with the same action signature already exists.
 

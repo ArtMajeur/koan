@@ -151,6 +151,36 @@ def test_debug_mode_recurring_mission_success_is_shown(monkeypatch):
     assert sent and "[daily] check emails" in sent[0]
 
 
+TICK = "/handle https://github.com/Org/repo/issues/7 after:ci-poll ⏳(2026-11-09T10:00)"
+
+
+def test_normal_mode_pipeline_tick_success_is_suppressed(monkeypatch, tmp_path):
+    # A chained tick is queued by the pipeline, not by the operator: one
+    # "Done" line per tick would bury the steps' own outcome messages.
+    sent = []
+    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg, **k: sent.append(msg))
+    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
+    koan_run._notify_mission_end(str(tmp_path), "proj", 1, 3, 0, mission_title=TICK)
+    assert sent == []
+
+
+def test_normal_mode_pipeline_tick_failure_is_shown(monkeypatch, tmp_path):
+    sent = []
+    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg, **k: sent.append(msg))
+    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
+    koan_run._notify_mission_end(str(tmp_path), "proj", 1, 3, 1, mission_title=TICK)
+    assert sent and "after:ci-poll" in sent[0]
+
+
+def test_normal_mode_human_handle_success_is_shown(monkeypatch, tmp_path):
+    sent = []
+    monkeypatch.setattr(koan_run, "_notify", lambda inst, msg, **k: sent.append(msg))
+    monkeypatch.setattr(koan_run, "is_debug", lambda: False)
+    title = "/handle https://github.com/Org/repo/issues/7"
+    koan_run._notify_mission_end(str(tmp_path), "proj", 1, 3, 0, mission_title=title)
+    assert sent == [f"✅ [proj] Done: {title}"]
+
+
 def test_normal_mode_skill_failure_is_one_message_with_reason(sent, normal):
     koan_run._notify_mission_end(
         "/i", "proj", 2, 3, 1, mission_title=f"/review {PR}", pr_url=PR,
