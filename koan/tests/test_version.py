@@ -4,7 +4,16 @@ import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 os.environ.setdefault("KOAN_ROOT", "/tmp/test-koan")
+
+
+@pytest.fixture(autouse=True)
+def _no_deploy_env(monkeypatch):
+    """Keep a real Railway environment from leaking into the git-failure tests."""
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    monkeypatch.delenv("RAILWAY_GIT_BRANCH", raising=False)
 
 
 class TestGetVersion:
@@ -39,6 +48,22 @@ class TestGetVersion:
                    side_effect=subprocess.TimeoutExpired("git", 5)):
             assert get_version() == ""
 
+    def test_no_git_checkout_falls_back_to_deployed_commit(self, monkeypatch):
+        # Docker images ship without .git: git describe fails, Railway
+        # still tells us which commit is deployed.
+        from app.version import get_version
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "fee2bbd1ebcde48c55616be754208de44e2fc63e")
+        mock_result = MagicMock(returncode=128, stdout="")
+        with patch("app.version.subprocess.run", return_value=mock_result):
+            assert get_version() == "fee2bbd1"
+
+    def test_git_tag_wins_over_deployed_commit(self, monkeypatch):
+        from app.version import get_version
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "fee2bbd1ebcde48c55616be754208de44e2fc63e")
+        mock_result = MagicMock(returncode=0, stdout="v0.9.0-1-gfee2bbd1\n")
+        with patch("app.version.subprocess.run", return_value=mock_result):
+            assert get_version() == "v0.9.0@fee2bbd1 +1"
+
 
 class TestGetBranch:
     """Test app.version.get_branch()."""
@@ -71,6 +96,12 @@ class TestGetBranch:
         with patch("app.version.subprocess.run",
                    side_effect=subprocess.TimeoutExpired("git", 5)):
             assert get_branch() == ""
+
+    def test_no_git_checkout_falls_back_to_deployed_branch(self, monkeypatch):
+        from app.version import get_branch
+        monkeypatch.setenv("RAILWAY_GIT_BRANCH", "dev")
+        with patch("app.version.subprocess.run", side_effect=FileNotFoundError):
+            assert get_branch() == "dev"
 
 
 class TestVersionSkill:
