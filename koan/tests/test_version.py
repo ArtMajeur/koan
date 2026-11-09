@@ -10,10 +10,32 @@ os.environ.setdefault("KOAN_ROOT", "/tmp/test-koan")
 
 
 @pytest.fixture(autouse=True)
-def _no_deploy_env(monkeypatch):
-    """Keep a real Railway environment from leaking into the git-failure tests."""
+def _no_deploy_env(monkeypatch, tmp_path):
+    """Keep a real Railway environment and the repo's own CHANGES.md from
+    leaking into the git-failure tests."""
     monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
     monkeypatch.delenv("RAILWAY_GIT_BRANCH", raising=False)
+    monkeypatch.setattr("app.version._CHANGES_MD", tmp_path / "missing.md", raising=False)
+
+
+def _write_changes(monkeypatch, tmp_path, text):
+    changes = tmp_path / "CHANGES.md"
+    changes.write_text(text)
+    monkeypatch.setattr("app.version._CHANGES_MD", changes, raising=False)
+
+
+_CHANGES_WITH_RELEASES = """# Kōan changelog
+
+Released versions of Kōan, newest on top.
+
+---
+
+## v0.9.0 — 2026-10-28
+
+**Added**
+
+## v0.8.1 — 2026-07-22
+"""
 
 
 class TestGetVersion:
@@ -56,6 +78,28 @@ class TestGetVersion:
         mock_result = MagicMock(returncode=128, stdout="")
         with patch("app.version.subprocess.run", return_value=mock_result):
             assert get_version() == "fee2bbd1"
+
+    def test_no_git_checkout_labels_commit_with_latest_release(self, monkeypatch, tmp_path):
+        # The image carries CHANGES.md; its newest release heading names the
+        # release the deployed commit is built on.
+        from app.version import get_version
+        _write_changes(monkeypatch, tmp_path, _CHANGES_WITH_RELEASES)
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "29f036eefa708b6cd5eecd18218968ba056f5fd2")
+        with patch("app.version.subprocess.run", side_effect=FileNotFoundError):
+            assert get_version() == "v0.9.0@29f036ee"
+
+    def test_no_git_checkout_no_deployed_commit_shows_release(self, monkeypatch, tmp_path):
+        from app.version import get_version
+        _write_changes(monkeypatch, tmp_path, _CHANGES_WITH_RELEASES)
+        with patch("app.version.subprocess.run", side_effect=FileNotFoundError):
+            assert get_version() == "v0.9.0"
+
+    def test_changes_without_release_heading_keeps_commit_only(self, monkeypatch, tmp_path):
+        from app.version import get_version
+        _write_changes(monkeypatch, tmp_path, "# Kōan changelog\n\n## ${NEXT}\n")
+        monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "29f036eefa708b6cd5eecd18218968ba056f5fd2")
+        with patch("app.version.subprocess.run", side_effect=FileNotFoundError):
+            assert get_version() == "29f036ee"
 
     def test_git_tag_wins_over_deployed_commit(self, monkeypatch):
         from app.version import get_version
