@@ -10,11 +10,15 @@ VERDICTS = ("go", "needs_human", "not_a_bug")
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _COMMENT_FOOTER = "\n---\n"
-# The whole section must be one "none" line: "None — ready to implement.",
-# "No open questions.", "N/A". "None of these block, but: …" is a question.
+# The whole section must be one "none" line, optionally followed by "ready to
+# implement" and nothing else: "None — ready to implement.", "No open
+# questions.", "N/A". "None of these block, but: …", "N/A — but please confirm
+# …" and "None: <anything>" are questions.
 _NO_QUESTIONS_RE = re.compile(
-    r"^[\s*_>•-]*(?:none|n/?a|no(?:\s+open)?\s+questions?|aucune?(?:\s+questions?)?)"
-    r"[\s*_]*(?:[—–:.-].*)?$",
+    r"^[\s*_>•-]*"
+    r"(?:none|n/?a|no(?:\s+open)?\s+questions?|aucune?(?:\s+questions?(?:\s+ouvertes?)?)?)"
+    r"[\s*_.]*"
+    r"(?:[—–:-]\s*(?:ready\s+to\s+implement|prête?\s+à\s+implémenter)[\s*_.!]*)?$",
     re.IGNORECASE,
 )
 

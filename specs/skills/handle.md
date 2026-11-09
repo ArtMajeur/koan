@@ -29,14 +29,21 @@ that phase, and either queues the next step or stops at a gate. Heavy work alway
 as its **own mission** (`/plan`, `/implement`, `/review`, `/rebase --fix`, the QA
 command), so every step gets a fresh model context and its own timeout and budget.
 
-A tick whose context starts with `after:` was queued by the pipeline (a chained
+A tick whose context starts with `after:<step>` was queued by the pipeline (a chained
 follow-up, the CI relay, a scheduled re-check). Any other tick is a **human poke**. Only
 pokes change the requester, re-enter a finished pipeline, or get a "busy" reply.
+
+A chained tick runs only if its step is the one the current phase waits for
+(`planning`←`plan`, `implementing`←`implement`, `ci`←`ci`/`ci-poll`, `reviewing`←`review`,
+`fixing`←`fix`, `qa`←`qa-wait`, `qa_running`←`qa`); any other chained tick — e.g. a
+re-check that fires after the pipeline gated — is ignored. A poke answers "busy" only
+while a re-check event for the current phase is actually scheduled; otherwise (a retry
+after an error, a lost event file) it re-evaluates the phase.
 
 | Phase | Entered when | The tick does |
 |---|---|---|
 | *(none)* | first `/handle` | assign the bot, board → in-progress, run triage (LLM, read-only) |
-| `planning` | triage says `go` | after `/plan`: read the plan's *Open Questions*; a single "none" line → `implementing`, else gate |
+| `planning` | triage says `go` | after `/plan`: read the plan's *Open Questions*; a single "none" line (optionally "— ready to implement", nothing else) → `implementing`, else gate |
 | `implementing` | plan is clear | after `/implement`: the bot's own open PR on `<prefix>implement-<N>` from the base repository (never a fork's same-named branch), updated since the phase started → `ci` |
 | `ci` | PR known | decide from the **PR head's own runs** (below) |
 | `reviewing` | head CI green, or no CI | after `/review --force`: the review sidecar's `lgtm` for the **PR head** |
@@ -56,9 +63,9 @@ therefore re-reads the branch runs, keeps those of the PR head, and decides:
 | Head state | Action |
 |---|---|
 | success | `/review` |
-| no runs on the branch at all | re-check once after `poll_minutes`, then `/review` (hand-off says no CI ran) |
+| no run for the head (none on the branch, or only older commits') | re-check once after `poll_minutes`, then `/review` as "no CI" — a path-filtered or docs-only commit has none |
 | pending, `ci_check` enabled | register in `## CI` (without resetting an existing entry); the relay wakes the tick |
-| pending without `ci_check`, or no run for the head yet | re-check after `poll_minutes`, at most `max_polls` times, then gate |
+| pending without `ci_check` | re-check after `poll_minutes`, at most `max_polls` times, then gate |
 | failure still owned by `/ci_check` (in `## CI`, or no exhausted outcome relayed) | register and wait |
 | failure after the queue gave up, or blocked on approval | gate |
 
@@ -86,8 +93,10 @@ state) — it never asserts green from an earlier signal.
 ## Requester
 
 - Set by a **human poke** only: the author of the latest `@<bot> handle` (or
-  `@<bot> /handle`) comment, if authorized by the same rule as GitHub @mention commands
-  (`github.authorized_users`, write access for `*`). Persisted in the record.
+  `@<bot> /handle`) comment **newer than the previous tick**, if authorized by the same
+  rule as GitHub @mention commands (`github.authorized_users`, write access for `*`).
+  Persisted in the record. A poke from chat finds no newer mention and keeps the stored
+  requester rather than handing the pipeline to an earlier commenter.
 - Chained ticks never change it, so a drive-by mention mid-pipeline cannot take over the
   pings, the review request or the board column.
 - With no authorized mention (started from chat), the issue author if authorized;
@@ -190,3 +199,5 @@ state) — it never asserts green from an earlier signal.
   repository; an issue tracked in another repo than the code gates as "no PR".
 - A preview deployment is matched on the PR head or its merge commit; a deployment keyed
   on another SHA never reads as ready and the hand-off says the preview was not ready.
+- Bot logins are compared case-insensitively and with GitHub App forms (`app/<slug>`,
+  `<slug>[bot]`) folded to the bare name; this is untested against a real App identity.

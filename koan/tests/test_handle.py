@@ -214,9 +214,15 @@ class TestOpenQuestions:
     def test_single_none_line_means_ready(self, text):
         assert open_questions(_plan_body(text)) == ""
 
+    @pytest.mark.parametrize("text", ["None: ready to implement", "Aucune — prête à implémenter."])
+    def test_ready_to_implement_suffix_is_accepted(self, text):
+        assert open_questions(_plan_body(text)) == ""
+
     @pytest.mark.parametrize("text", [
         "- Should guests see it?",
         "None of these block, but: should guests see it?",
+        "N/A — but please confirm the currency",
+        "None: the currency is EUR, right?",
         f"None — ready to implement.\n\n{AUDIT}",
         "None.\n\n#### Note\n\nCheck the cache first.",
     ])
@@ -369,25 +375,37 @@ class TestTriage:
 class TestRequester:
     def test_unauthorized_mention_cannot_take_over(self, pipeline):
         pipeline.seed(phase="waiting_human", resume="triage", requester="dev")
-        pipeline.github.comments.append({"author": "drive-by", "body": f"@{BOT} handle", "created_at": 5.0})
+        pipeline.github.comments.append(
+            {"author": "drive-by", "body": f"@{BOT} handle", "created_at": time.time() + 10})
         pipeline.set_triage(_triage_output("not_a_bug"))
         pipeline.run()
         assert pipeline.record()["requester"] == "dev"
         assert "@dev:" in pipeline.github.posted[0]
 
     def test_chained_tick_never_changes_requester(self, pipeline):
-        pipeline.seed(phase="waiting_human", resume="triage", requester="dev")
-        pipeline.github.comments.append({"author": "lead", "body": f"@{BOT} handle", "created_at": 5.0})
-        pipeline.set_triage(_triage_output("not_a_bug"))
-        pipeline.run(after="ci")
+        pipeline.seed(phase="planning", phase_started_at=100.0, requester="dev")
+        pipeline.github.comments += [
+            {"author": "lead", "body": f"@{BOT} handle", "created_at": time.time() + 10},
+            _plan_comment("- Guests?", 200.0),
+        ]
+        pipeline.run(after="plan")
         assert pipeline.record()["requester"] == "dev"
+        assert "@dev:" in pipeline.github.posted[0]
 
     def test_authorized_new_mention_becomes_requester(self, pipeline):
         pipeline.seed(phase="waiting_human", resume="triage", requester="dev")
-        pipeline.github.comments.append({"author": "lead", "body": f"@{BOT} /handle", "created_at": 5.0})
+        pipeline.github.comments.append(
+            {"author": "lead", "body": f"@{BOT} /handle", "created_at": time.time() + 10})
         pipeline.set_triage(_triage_output("not_a_bug"))
         pipeline.run()
         assert pipeline.record()["requester"] == "lead"
+
+    def test_poke_from_chat_ignores_an_older_mention(self, pipeline):
+        pipeline.seed(phase="waiting_human", resume="triage", requester="dev")
+        pipeline.github.comments.append({"author": "lead", "body": f"@{BOT} handle", "created_at": 5.0})
+        pipeline.set_triage(_triage_output("not_a_bug"))
+        pipeline.run()
+        assert pipeline.record()["requester"] == "dev"
 
     def test_external_issue_author_is_not_pinged(self, pipeline):
         pipeline.github.comments = []
@@ -475,6 +493,24 @@ class TestCi:
         assert pipeline.pending() == []
         assert len(pipeline.events()) == 1
 
+    def test_head_without_runs_counts_as_no_ci_after_one_recheck(self, pipeline):
+        self._seed_ci(pipeline)
+        pipeline.github.ci_state = "missing"
+        pipeline.run(after="ci")
+        assert pipeline.record()["phase"] == "ci"
+        pipeline.run(after="ci-poll")
+        assert pipeline.record()["phase"] == "reviewing"
+
+    def test_poke_during_poll_starts_no_second_chain(self, pipeline):
+        self._seed_ci(pipeline)
+        pipeline.github.ci_state = "missing"
+        pipeline.run(after="ci")
+        polls = pipeline.record()["ci_polls"]
+        pipeline.run()
+        assert len(pipeline.events()) == 1
+        assert pipeline.record()["ci_polls"] == polls
+        assert "current step: ci" in pipeline.github.posted[-1]
+
     def test_no_ci_is_confirmed_once_then_reviewed(self, pipeline):
         self._seed_ci(pipeline)
         pipeline.github.ci_state = "no_ci"
@@ -498,8 +534,9 @@ class TestCi:
         assert len(pipeline.events()) == 1
 
     def test_polls_are_bounded(self, pipeline):
+        pipeline.set_ci_check(False)
         self._seed_ci(pipeline, ci_polls=2)
-        pipeline.github.ci_state = "missing"
+        pipeline.github.ci_state = "pending"
         pipeline.run(after="ci-poll")
         assert pipeline.record()["resume"] == "ci"
 
@@ -628,6 +665,20 @@ class TestQa:
         assert len(pipeline.events()) == 1
         assert pipeline.record()["qa_waits"] == 1
 
+    def test_poke_with_lost_recheck_reevaluates(self, pipeline):
+        self._lgtm(pipeline)
+        pipeline.seed(phase="qa", qa_waits=1)
+        pipeline.run()
+        assert len(pipeline.events()) == 1
+        assert pipeline.record()["qa_waits"] == 2
+
+    def test_retry_after_error_in_qa_is_not_stuck(self, pipeline):
+        self._lgtm(pipeline)
+        pipeline.seed(phase="waiting_human", resume="retry", failed_phase="qa", qa_waits=1)
+        pipeline.github.preview = ("ready", "https://pr12.preview.example")
+        pipeline.run()
+        assert pipeline.record()["phase"] == "qa_running"
+
     def test_waits_exhausted_hands_off_without_qa(self, pipeline):
         self._lgtm(pipeline)
         pipeline.seed(phase="qa", qa_waits=2)
@@ -711,6 +762,16 @@ class TestReentry:
         record = pipeline.record()
         assert record["phase"] == "planning" and "pr_url" not in record
 
+    def test_chained_tick_on_a_gate_is_ignored(self, pipeline):
+        pipeline.seed(phase="waiting_human", resume="ci", pr_url=PR, pr_number="12", branch="b")
+        pipeline.run(after="ci-poll")
+        assert pipeline.github.posted == [] and pipeline.record()["phase"] == "waiting_human"
+
+    def test_chained_tick_for_another_phase_is_ignored(self, pipeline):
+        pipeline.seed(phase="ci", pr_url=PR, pr_number="12", branch="b")
+        pipeline.run(after="plan")
+        assert pipeline.github.posted == [] and pipeline.pending() == []
+
     def test_chained_tick_on_done_is_ignored(self, pipeline):
         self._done(pipeline)
         pipeline.run(after="ci")
@@ -732,6 +793,17 @@ class TestEntryPoints:
         ok, _ = pipeline.run(url="https://github.com/owner/repo/pull/99")
         assert not ok
         assert "handle" in pipeline.github.posted[0]
+
+
+class TestSameLogin:
+    @pytest.mark.parametrize("login", ["koan-bot", "KOAN-BOT", "app/koan-bot", "koan-bot[bot]"])
+    def test_user_and_app_forms_match(self, login):
+        from skills.core.handle.handle_github import same_login
+        assert same_login(login, BOT)
+
+    def test_empty_never_matches(self):
+        from skills.core.handle.handle_github import same_login
+        assert not same_login("", "")
 
 
 class TestFindOpenPr:

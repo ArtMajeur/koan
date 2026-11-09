@@ -8,6 +8,7 @@ tick is a human poke. See ``specs/skills/handle.md``.
 """
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -48,10 +49,15 @@ class Tick:
     bot: str
     config: dict
     record: dict
-    chained: bool = False
+    after: str = ""
     issue: dict = field(default_factory=dict)
     comments: List[dict] = field(default_factory=list)
     requester: str = ""
+
+    @property
+    def chained(self) -> bool:
+        """Queued by the pipeline itself (follow-up, CI relay, re-check)."""
+        return bool(self.after)
 
     @property
     def full_repo(self) -> str:
@@ -138,11 +144,17 @@ def _load_tick(
         project_name=project_name, project_path=project_path,
         instance_dir=instance_dir, bot=bot, config=get_handle_config(),
         record=handle_state.load_record(instance_dir, issue_url),
-        chained=context.strip().startswith("after:"), issue=issue,
+        after=_after_tag(context), issue=issue,
     )
     tick.comments = gh.fetch_comments(owner, repo, number)
     tick.requester = _resolve_requester(tick)
     return tick
+
+
+def _after_tag(context: str) -> str:
+    """The step a chained tick waits for (``after:<step>``), or "" for a human poke."""
+    first = (context or "").strip().split(" ", 1)[0]
+    return first[len("after:"):] if first.startswith("after:") else ""
 
 
 def _resolve_requester(tick: Tick) -> str:
@@ -154,11 +166,14 @@ def _resolve_requester(tick: Tick) -> str:
     stored = tick.record.get("requester", "")
     if tick.chained:
         return stored
-    candidates = [gh.latest_handle_mention(tick.comments, tick.bot)]
+    # A mention older than the last tick is not this poke (e.g. a poke from
+    # chat): it must not hand the pipeline back to an earlier commenter.
+    since = tick.record.get("updated_at", 0)
+    candidates = [gh.latest_handle_mention(tick.comments, tick.bot, since)]
     if not stored:
         candidates.append(tick.issue.get("author", ""))
     for login in candidates:
-        if login and login == stored:
+        if login and gh.same_login(login, stored):
             return stored
         if login and gh.is_authorized(tick.owner, tick.repo, login, tick.project_name):
             tick.save(requester=login)
@@ -198,9 +213,12 @@ def _fail(
 
 def _dispatch(tick: Tick) -> Result:
     phase = tick.record.get("phase", "")
+    if tick.chained and tick.after not in _EXPECTED_AFTER.get(phase, ()):
+        # A follow-up, relay or re-check left over from an earlier path (the
+        # pipeline gated, a poke moved it on): acting on it would repeat work
+        # no human asked for.
+        return True, f"Stale after:{tick.after} tick ignored in phase {phase or 'new'}"
     if phase in ("done", "stopped"):
-        if tick.chained:
-            return True, f"Pipeline already {phase}; chained tick ignored"
         return _reenter(tick)
     if tick.record.get("pr_number"):
         state = _pr(tick)["state"]
@@ -271,7 +289,7 @@ def _run_triage(tick: Tick) -> str:
 
     comments = "\n\n".join(
         f"@{c.get('author')}: {c.get('body')}" for c in tick.comments
-        if (c.get("author") or "").lower() != tick.bot.lower()
+        if not gh.same_login(c.get("author") or "", tick.bot)
     )
     prompt = load_skill_prompt(
         _SKILL_DIR, "triage", project_path=tick.project_path,
@@ -305,7 +323,7 @@ def _after_plan(tick: Tick) -> Result:
     since = tick.record.get("phase_started_at", 0)
     plan = next(
         (c for c in reversed(tick.comments)
-         if (c.get("author") or "").lower() == tick.bot.lower()
+         if gh.same_login(c.get("author") or "", tick.bot)
          and c["created_at"] >= since and has_plan(c.get("body") or "")),
         None,
     )
@@ -349,7 +367,11 @@ def _after_ci(tick: Tick) -> Result:
     state = handle_ci.ci_at_head(tick.record["branch"], tick.full_repo, head)
     if state == "success":
         return _queue_review(tick)
-    if state == "no_ci":
+    if state in ("no_ci", "missing"):
+        # No run for the head after one re-check: no CI for this commit
+        # (path-filtered workflows, docs-only change), not a CI to wait for.
+        if _recheck_pending(tick, "ci-poll"):
+            return _waiting(tick, "ci")
         if tick.record.get("ci_empty_checks", 0) >= 1:
             return _queue_review(tick)
         tick.save(ci_empty_checks=tick.record.get("ci_empty_checks", 0) + 1)
@@ -357,7 +379,7 @@ def _after_ci(tick: Tick) -> Result:
     if state == "pending" and is_ci_check_enabled():
         handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.full_repo)
         return _waiting(tick, "ci")
-    if state in ("pending", "missing"):
+    if state == "pending":
         return _poll_ci(tick, state)
     if state == "failure" and is_ci_check_enabled() and _ci_fix_may_continue(tick):
         handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.full_repo)
@@ -374,6 +396,8 @@ def _ci_fix_may_continue(tick: Tick) -> bool:
 
 def _poll_ci(tick: Tick, state: str) -> Result:
     """No relay will fire: check again later, a bounded number of times."""
+    if _recheck_pending(tick, "ci-poll"):
+        return _waiting(tick, "ci")  # a poke must not start a second poll chain
     polls = tick.record.get("ci_polls", 0)
     if polls >= tick.config["max_polls"]:
         return _gate(tick, "ci_blocked", "ci", pr_url=tick.record["pr_url"], outcome=state)
@@ -424,7 +448,7 @@ def _qa_or_finish(tick: Tick) -> Result:
     qa = tick.config["qa"]
     if not (qa["command"] and qa["preview_environment"]):
         return _finish(tick, qa_note="")
-    if tick.record.get("phase") == "qa" and not tick.chained:
+    if tick.record.get("phase") == "qa" and _recheck_pending(tick, "qa-wait"):
         return _waiting(tick, "qa")  # a poke must not add a re-check or burn a wait
     number = tick.record["pr_number"]
     shas = (_pr(tick)["headRefOid"], gh.merge_commit_sha(tick.owner, tick.repo, number))
@@ -476,13 +500,13 @@ def _ci_note(tick: Tick) -> str:
     state = handle_ci.ci_at_head(tick.record["branch"], tick.full_repo, head)
     if state == "success":
         return render("ci_green")
-    if state == "no_ci":
+    if state in ("no_ci", "missing"):
         return render("ci_none")
     return render("ci_other", state=state)
 
 
 def _reviewer(tick: Tick) -> str:
-    return "" if tick.requester.lower() == tick.bot.lower() else tick.requester
+    return "" if gh.same_login(tick.requester, tick.bot) else tick.requester
 
 
 # -- re-entry, gates, shared steps ----------------------------------------------
@@ -553,12 +577,42 @@ def _schedule_tick(tick: Tick, minutes: int, after: str) -> datetime:
     return run_at
 
 
+def _recheck_pending(tick: Tick, after: str) -> bool:
+    """True when a human poke should wait: a re-check event is still scheduled.
+
+    A chained tick is that re-check itself. A retry after an error, or a lost
+    event file, finds none and re-evaluates instead of answering "busy" forever.
+    """
+    if tick.chained:
+        return False
+    wanted = handle_state.handle_entry(tick.project_name, tick.issue_url, after)
+    for path in (Path(tick.instance_dir) / "events").glob("*.json"):
+        try:
+            if json.loads(path.read_text()).get("mission", "").strip() == wanted:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def _move_board(tick: Tick, column_key: str) -> None:
     board = tick.config["board"]
     column = board.get(column_key) or ""
     if board and column:
         gh.move_on_board(board, tick.issue.get("node_id", ""), column)
 
+
+# The `after:` tags a chained tick may carry in each phase; any other chained
+# tick is stale. A gate, `done` and `stopped` accept human pokes only.
+_EXPECTED_AFTER: Dict[str, Tuple[str, ...]] = {
+    "planning": ("plan",),
+    "implementing": ("implement",),
+    "ci": ("ci", "ci-poll"),
+    "reviewing": ("review",),
+    "fixing": ("fix",),
+    "qa": ("qa-wait",),
+    "qa_running": ("qa",),
+}
 
 _PHASES: Dict[str, Callable[[Tick], Result]] = {
     "triage": _triage,

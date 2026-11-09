@@ -68,12 +68,28 @@ def fetch_comments(owner: str, repo: str, number: str) -> List[dict]:
     return comments
 
 
-def latest_handle_mention(comments: List[dict], bot: str) -> str:
-    """Author of the latest ``@<bot> handle`` comment that is not the bot ("" if none)."""
+def same_login(a: str, b: str) -> bool:
+    """Compare GitHub logins as gh reports them for users and GitHub Apps.
+
+    An App shows up as ``app/<slug>`` (gh) or ``<slug>[bot]`` (REST), while
+    ``github.nickname`` holds the bare name.
+    """
+    def _bare(login: str) -> str:
+        login = (login or "").strip().lower()
+        login = login[len("app/"):] if login.startswith("app/") else login
+        return login[: -len("[bot]")] if login.endswith("[bot]") else login
+
+    return bool(_bare(a)) and _bare(a) == _bare(b)
+
+
+def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:
+    """Author of the latest ``@<bot> handle`` comment newer than *since* ("" if none)."""
     mention = re.compile(rf"@{re.escape(bot)}\s+/?handle\b", re.IGNORECASE)
     for comment in reversed(comments):
+        if comment.get("created_at", 0) <= since:
+            break
         author = comment.get("author") or ""
-        if author.lower() != bot.lower() and mention.search(comment.get("body") or ""):
+        if not same_login(author, bot) and mention.search(comment.get("body") or ""):
             return author
     return ""
 
@@ -99,7 +115,7 @@ def latest_bot_comment(
 ) -> Optional[dict]:
     """Newest comment by *bot* at or after *since* (containing *marker*, if given)."""
     for comment in reversed(comments):
-        if ((comment.get("author") or "").lower() == bot.lower()
+        if (same_login(comment.get("author") or "", bot)
                 and comment["created_at"] >= since
                 and marker in (comment.get("body") or "")):
             return comment
@@ -137,9 +153,9 @@ def find_open_pr(owner: str, repo: str, branch: str, bot: str) -> Optional[dict]
         "--json", "url,number,headRefOid,updatedAt,author,headRepositoryOwner",
     )) or []
     for pr in prs:
-        author = ((pr.get("author") or {}).get("login") or "").lower()
+        author = (pr.get("author") or {}).get("login") or ""
         head_owner = ((pr.get("headRepositoryOwner") or {}).get("login") or "").lower()
-        if author == bot.lower() and head_owner == owner.lower():
+        if same_login(author, bot) and head_owner == owner.lower():
             return {
                 "url": pr["url"], "number": pr["number"], "headRefOid": pr["headRefOid"],
                 "updated_at": _epoch(pr["updatedAt"]),
