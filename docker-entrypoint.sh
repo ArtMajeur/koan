@@ -282,8 +282,13 @@ railway_setup_git() {
         gh auth setup-git 2>/dev/null \
             && success "git credential helper configured via gh" \
             || warn "gh auth setup-git failed (continuing)"
-        git config --global url."https://github.com/".insteadOf "git@github.com:" || true
-        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" || true
+        # Both rewrites share one key: a plain `git config key value` would
+        # replace the first with the second. --replace-all with a value
+        # pattern touches only its own entry, so re-runs don't duplicate it.
+        git config --global --replace-all url."https://github.com/".insteadOf \
+            "git@github.com:" '^git@github\.com:$' || true
+        git config --global --replace-all url."https://github.com/".insteadOf \
+            "ssh://git@github.com/" '^ssh://git@github\.com/$' || true
     else
         warn "GH_TOKEN unset — git push/clone over HTTPS may prompt"
     fi
