@@ -9,11 +9,14 @@ from typing import Optional
 VERDICTS = ("go", "needs_human", "not_a_bug")
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
-_OPEN_QUESTIONS_RE = re.compile(
-    r"^#{2,4}\s+(?:open questions|questions ouvertes)\s*$", re.IGNORECASE | re.MULTILINE,
+_COMMENT_FOOTER = "\n---\n"
+# The whole section must be one "none" line: "None — ready to implement.",
+# "No open questions.", "N/A". "None of these block, but: …" is a question.
+_NO_QUESTIONS_RE = re.compile(
+    r"^[\s*_>•-]*(?:none|n/?a|no(?:\s+open)?\s+questions?|aucune?(?:\s+questions?)?)"
+    r"[\s*_]*(?:[—–:.-].*)?$",
+    re.IGNORECASE,
 )
-_SECTION_END_RE = re.compile(r"^(?:#{1,4}\s|-{3,}\s*$)", re.MULTILINE)
-_NO_QUESTIONS_RE = re.compile(r"^[\W_]*(?:none|aucune?|rien|n/?a)\b", re.IGNORECASE)
 
 
 def parse_triage(output: str) -> Optional[dict]:
@@ -44,37 +47,49 @@ def parse_triage(output: str) -> Optional[dict]:
     }
 
 
-def open_questions(plan_body: str) -> Optional[str]:
+def _plan_text(comment_body: str) -> str:
+    """Drop the comment footer that /plan appends after a horizontal rule."""
+    body = comment_body or ""
+    if _COMMENT_FOOTER in body:
+        body = body.rsplit(_COMMENT_FOOTER, 1)[0]
+    return body
+
+
+def open_questions(comment_body: str) -> Optional[str]:
     """Return the plan's open questions: "" when none, None when no such section.
 
-    The section runs to the next heading or horizontal rule (the comment
-    footer starts with one).
+    Section boundaries come from ``plan_runner`` (the writer of the section),
+    so an assumptions audit folded into it counts as a question.
     """
-    match = _OPEN_QUESTIONS_RE.search(plan_body or "")
-    if not match:
+    from app.plan_runner import extract_open_questions
+
+    section = extract_open_questions(_plan_text(comment_body))
+    if section is None:
         return None
-    rest = plan_body[match.end():]
-    end = _SECTION_END_RE.search(rest)
-    section = (rest[: end.start()] if end else rest).strip()
-    if not section or _NO_QUESTIONS_RE.match(section):
+    lines = [line for line in section.splitlines() if line.strip()]
+    if not lines or (len(lines) == 1 and _NO_QUESTIONS_RE.match(lines[0])):
         return ""
     return section
 
 
-def has_plan(body: str) -> bool:
+def has_plan(comment_body: str) -> bool:
     """True when a comment carries a plan's open-questions section."""
-    return bool(_OPEN_QUESTIONS_RE.search(body or ""))
+    from app.plan_runner import extract_open_questions
+
+    return extract_open_questions(_plan_text(comment_body)) is not None
 
 
-def review_verdict(sidecar_path: Path, since: float) -> Optional[bool]:
-    """Return the review's ``lgtm`` if the sidecar was written at/after *since*.
+def review_verdict(sidecar_path: Path, since: float, head_sha: str) -> Optional[bool]:
+    """Return the review's ``lgtm`` when it reviewed *head_sha* at/after *since*.
 
-    None means no fresh, well-formed verdict (missing file, stale review,
-    or no boolean ``lgtm``).
+    None means no fresh, well-formed verdict for the current head (missing
+    file, stale review, another commit, or no boolean ``lgtm``).
     """
     try:
         data = json.loads(sidecar_path.read_text())
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("head_sha") != head_sha:
         return None
     try:
         written = datetime.strptime(data.get("timestamp", ""), "%Y-%m-%dT%H:%M:%SZ")

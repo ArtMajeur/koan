@@ -348,6 +348,8 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     # /handle pipeline: review-round bound, optional board/team/QA wiring.
     "handle": {
         "max_review_rounds": "int",
+        "poll_minutes": "int",
+        "max_polls": "int",
         "board": "dict",
         "product_team": "str",
         "qa": "dict",
@@ -650,6 +652,10 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                 f"{'/'.join(sorted(MCP_TRANSPORTS))}, got {transport!r}",
             ))
 
+    handle = config.get("handle")
+    if isinstance(handle, dict):
+        warnings.extend(_validate_handle_nested(handle))
+
     # Semantic check: deep-validate optimizations.caveman when it's a dict.
     optimizations = config.get("optimizations")
     if isinstance(optimizations, dict):
@@ -753,6 +759,44 @@ def _validate_rtk_nested(rtk: dict) -> List[Tuple[str, str]]:
                     path,
                     f"'{path}' should be one of "
                     f"{sorted(RTK_ENABLED_VALID - {''})}, got {value!r}",
+                ))
+    return warnings
+
+
+_HANDLE_SUBKEYS: Dict[str, Dict[str, Any]] = {
+    "board": {
+        "owner": "str", "number": "int", "status_field": "str",
+        "in_progress": "str", "review": "str", "product_review": "str",
+    },
+    "qa": {
+        "command": "str", "preview_environment": "str",
+        "wait_minutes": "int", "max_wait_ticks": "int",
+    },
+}
+
+
+def _validate_handle_nested(handle: dict) -> List[Tuple[str, str]]:
+    """Validate ``handle.board`` / ``handle.qa`` keys.
+
+    A typo there (``in-progress`` for ``in_progress``) would otherwise turn a
+    board move or the QA step off without a word.
+    """
+    warnings: List[Tuple[str, str]] = []
+    for section, schema in _HANDLE_SUBKEYS.items():
+        values = handle.get(section)
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            path = f"handle.{section}.{key}"
+            if key not in schema:
+                suggestion = _suggest_typo(key, list(schema))
+                msg = f"unrecognized key '{path}'"
+                if suggestion:
+                    msg += f" (did you mean 'handle.{section}.{suggestion}'?)"
+                warnings.append((path, msg))
+            elif value is not None and not _check_type(value, schema[key]):
+                warnings.append((
+                    path, f"'{path}' should be {schema[key]}, got {type(value).__name__}",
                 ))
     return warnings
 

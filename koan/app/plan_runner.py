@@ -580,6 +580,23 @@ _ASSUMPTIONS_AUDIT_HEADER = (
 )
 
 
+def extract_open_questions(plan_text: str) -> Optional[str]:
+    """Return the body of the plan's Open Questions section, or None if absent.
+
+    Same boundaries as :func:`_merge_assumptions_into_open_questions`: the
+    section runs to the next same-or-higher-level heading, so an assumptions
+    audit folded into it — or a deeper sub-heading — stays inside.
+    """
+    match = _OPEN_QUESTIONS_RE.search(plan_text or "")
+    if not match:
+        return None
+    heading_level = match.group(0).strip().split(" ", 1)[0]
+    next_heading = re.compile(rf"^#{{2,{len(heading_level)}}}\s+", re.MULTILINE)
+    next_match = next_heading.search(plan_text, match.end())
+    end = next_match.start() if next_match else len(plan_text)
+    return plan_text[match.end():end].strip()
+
+
 def _merge_assumptions_into_open_questions(plan_text: str, findings: str) -> str:
     """Fold assumptions-audit findings into the plan's Open Questions section.
 

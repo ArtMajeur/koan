@@ -122,22 +122,47 @@ def queue_step(
     return step_queued
 
 
+def reset_record(instance_dir: str, issue_url: str) -> None:
+    """Forget *issue_url*'s pipeline so the next tick starts from triage."""
+    from app.utils import atomic_write_json
+
+    with _locked(instance_dir):
+        data = _read_all(instance_dir)
+        if data.pop(issue_url, None) is not None:
+            atomic_write_json(_state_path(instance_dir), data, indent=2)
+
+
+def _claim_ci_wakeup(instance_dir: str, pr_url: str, outcome: str) -> Optional[dict]:
+    """Under one lock: find the record waiting on *pr_url* in phase ``ci``,
+    store *outcome*, and return it (None when nothing waits on this PR)."""
+    from app.utils import atomic_write_json
+
+    wanted = pr_url.rstrip("/").lower()
+    with _locked(instance_dir):
+        data = _read_all(instance_dir)
+        for issue_url, record in data.items():
+            if not isinstance(record, dict) or record.get("phase") != "ci":
+                continue
+            if (record.get("pr_url") or "").rstrip("/").lower() != wanted:
+                continue
+            record.update(ci_outcome=outcome, updated_at=time.time())
+            atomic_write_json(_state_path(instance_dir), data, indent=2)
+            return {"issue_url": issue_url, "project": record.get("project", "")}
+    return None
+
+
 def relay_ci_outcome(instance_dir: str, pr_url: str, outcome: str) -> bool:
     """Hand a terminal ``## CI`` outcome back to the /handle pipeline.
 
     Only a record waiting in phase ``ci`` is woken: it stores *outcome* and
-    queues ``/handle <issue>``. Returns True when a tick was queued.
+    queues ``/handle <issue> after:ci``. Returns True when a tick was queued.
     """
     from app.utils import insert_pending_mission
 
-    issue_url = find_issue_for_pr(instance_dir, pr_url)
-    if not issue_url:
+    claimed = _claim_ci_wakeup(instance_dir, pr_url, outcome)
+    if claimed is None:
         return False
-    record = load_record(instance_dir, issue_url)
-    if record.get("phase") != "ci":
-        return False
-    update_record(instance_dir, issue_url, ci_outcome=outcome)
-    entry = handle_entry(record.get("project", ""), issue_url)
+    entry = handle_entry(claimed["project"], claimed["issue_url"], "ci")
     insert_pending_mission(Path(instance_dir) / "missions.md", entry)
-    print(f"[handle] CI {outcome} for {pr_url} → /handle {issue_url}", file=sys.stderr)
+    print(f"[handle] CI {outcome} for {pr_url} → /handle {claimed['issue_url']}", file=sys.stderr)
     return True

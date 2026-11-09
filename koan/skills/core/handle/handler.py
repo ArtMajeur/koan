@@ -13,7 +13,7 @@ def handle(ctx):
     return handle_github_skill(
         ctx,
         command="handle",
-        url_type="issue",
+        url_type="pr-or-issue",
         parse_func=parse_github_url,
         success_prefix="Pipeline queued",
     )

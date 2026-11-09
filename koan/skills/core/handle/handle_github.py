@@ -68,21 +68,40 @@ def fetch_comments(owner: str, repo: str, number: str) -> List[dict]:
     return comments
 
 
-def find_requester(comments: List[dict], bot: str, fallback: str) -> str:
-    """Author of the latest ``@<bot> handle`` comment that is not the bot."""
-    if bot:
-        mention = re.compile(rf"@{re.escape(bot)}\s+/?handle\b", re.IGNORECASE)
-        for comment in reversed(comments):
-            author = comment.get("author") or ""
-            if author.lower() != bot.lower() and mention.search(comment.get("body") or ""):
-                return author
-    return fallback
-
-
-def latest_bot_comment(comments: List[dict], bot: str, since: float) -> Optional[dict]:
-    """Newest comment by *bot* created at or after *since*."""
+def latest_handle_mention(comments: List[dict], bot: str) -> str:
+    """Author of the latest ``@<bot> handle`` comment that is not the bot ("" if none)."""
+    mention = re.compile(rf"@{re.escape(bot)}\s+/?handle\b", re.IGNORECASE)
     for comment in reversed(comments):
-        if (comment.get("author") or "").lower() == bot.lower() and comment["created_at"] >= since:
+        author = comment.get("author") or ""
+        if author.lower() != bot.lower() and mention.search(comment.get("body") or ""):
+            return author
+    return ""
+
+
+def is_authorized(owner: str, repo: str, login: str, project_name: str) -> bool:
+    """Same rule as GitHub @mention commands: allowlist, or write access for "*"."""
+    import os
+
+    from app.github_config import get_github_authorized_users
+    from app.github_notifications import check_user_permission
+    from app.projects_config import load_projects_config
+    from app.utils import load_config
+
+    if not login:
+        return False
+    projects = load_projects_config(os.environ.get("KOAN_ROOT", ""))
+    allowed = get_github_authorized_users(load_config(), project_name, projects)
+    return check_user_permission(owner, repo, login, allowed)
+
+
+def latest_bot_comment(
+    comments: List[dict], bot: str, since: float, marker: str = "",
+) -> Optional[dict]:
+    """Newest comment by *bot* at or after *since* (containing *marker*, if given)."""
+    for comment in reversed(comments):
+        if ((comment.get("author") or "").lower() == bot.lower()
+                and comment["created_at"] >= since
+                and marker in (comment.get("body") or "")):
             return comment
     return None
 
@@ -107,12 +126,16 @@ def assign_self(owner: str, repo: str, number: str) -> bool:
 
 
 def find_open_pr(owner: str, repo: str, branch: str) -> Optional[dict]:
-    """Open PR whose head is *branch*: ``{url, number, headRefOid}``."""
+    """Open PR whose head is *branch*: ``{url, number, headRefOid, updated_at}`` (epoch)."""
     prs = _json(run_gh(
         "pr", "list", "--repo", f"{owner}/{repo}", "--head", branch,
-        "--state", "open", "--json", "url,number,headRefOid",
+        "--state", "open", "--json", "url,number,headRefOid,updatedAt",
     )) or []
-    return prs[0] if prs else None
+    if not prs:
+        return None
+    pr = prs[0]
+    pr["updated_at"] = _epoch(pr.pop("updatedAt"))
+    return pr
 
 
 def pr_info(owner: str, repo: str, number: str) -> dict:
@@ -139,18 +162,24 @@ def hand_off_pr(owner: str, repo: str, number: str, reviewer: str) -> None:
             _log(f"review request to {reviewer} failed: {e}")
 
 
+def merge_commit_sha(owner: str, repo: str, number: str) -> str:
+    """The PR's test-merge commit, which ``pull_request`` workflows deploy."""
+    return api(f"repos/{owner}/{repo}/pulls/{number}", jq=".merge_commit_sha // empty").strip()
+
+
 def preview_status(
-    owner: str, repo: str, environment: str, head_sha: str,
+    owner: str, repo: str, environment: str, accepted_shas: Tuple[str, ...],
 ) -> Tuple[str, str]:
     """Return ``(status, url)`` of the PR's preview deployment.
 
-    status is ``ready`` (latest deployment is for *head_sha* and succeeded),
-    ``failed``, or ``pending`` (absent, outdated, or still deploying).
+    status is ``ready`` (latest deployment is for one of *accepted_shas* —
+    the PR head or its merge commit — and succeeded), ``failed``, or
+    ``pending`` (absent, outdated, or still deploying).
     """
     deployments = _json(api(
         f"repos/{owner}/{repo}/deployments?environment={quote(environment, safe='')}&per_page=1",
     )) or []
-    if not deployments or deployments[0].get("sha") != head_sha:
+    if not deployments or deployments[0].get("sha") not in accepted_shas:
         return "pending", ""
     statuses = _json(api(
         f"repos/{owner}/{repo}/deployments/{deployments[0]['id']}/statuses?per_page=1",
