@@ -102,6 +102,8 @@ command), so every step gets a fresh model context and its own timeout and budge
 - Nothing instance-specific lives in code: board, team, QA command and preview
   environment pattern come from `handle:` in `config.yaml`.
 - The PR stays a draft until the hand-off; `/handle` never merges.
+- The triage's free text (summary, questions) goes through `leak_detector` before it
+  is posted: its prompt carries text any issue participant wrote, and the model can read files.
 
 ## Error cases
 
@@ -125,6 +127,8 @@ command), so every step gets a fresh model context and its own timeout and budge
 ## Known debt / watch-outs
 
 - Triage emits a JSON verdict but has no golden-dataset eval yet.
+- Triage's Read/Glob/Grep are not path-scoped to the checkout; redaction covers known
+  token formats only, not arbitrary file contents.
 - Board support targets organization-owned Projects (v2); the token needs `project`
   scope, and the team lookup needs `read:org`.
 - A plan whose *Open Questions* heading is translated or renamed is treated as unclear

@@ -289,6 +289,16 @@ class TestTriage:
         assert "Which currency?" in pipeline.github.posted[0]
         assert pipeline.pending() == []
 
+    def test_secrets_redacted_from_posted_triage(self, pipeline):
+        token = "ghp_" + "a" * 36
+        output = (
+            "```json\n" + json.dumps({"verdict": "needs_human", "summary": f"token {token}",
+                                      "questions": [f"Is {token} yours?"]}) + "\n```"
+        )
+        pipeline.set_triage(output)
+        pipeline.run()
+        assert token not in pipeline.github.posted[0]
+
     def test_unparseable_triage_gates(self, pipeline):
         pipeline.set_triage("I could not decide.")
         pipeline.run()

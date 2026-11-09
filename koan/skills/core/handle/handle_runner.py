@@ -135,7 +135,7 @@ def _start(tick: Tick) -> Result:
 
 
 def _triage(tick: Tick) -> Result:
-    verdict = parse_triage(_run_triage(tick))
+    verdict = _redacted(parse_triage(_run_triage(tick)))
     if verdict is None:
         return _gate(tick, "triage_needs_human", "triage",
                      summary="The triage produced no usable verdict.", questions="")
@@ -145,6 +145,25 @@ def _triage(tick: Tick) -> Result:
     questions = "\n".join(f"- {q}" for q in verdict["questions"])
     key = "triage_needs_human" if verdict["verdict"] == "needs_human" else "triage_not_a_bug"
     return _gate(tick, key, "triage", summary=verdict["summary"], questions=questions)
+
+
+def _redacted(verdict: Optional[dict]) -> Optional[dict]:
+    """Strip credentials from the model's free text before it is posted.
+
+    The triage prompt carries text anyone with issue access wrote, and the
+    model can read files: an injected comment could steer it into echoing a
+    secret into the public thread.
+    """
+    if verdict is None:
+        return None
+    from app.leak_detector import scan_and_redact
+
+    context = "/handle triage comment"
+    return {
+        **verdict,
+        "summary": scan_and_redact(verdict["summary"], context),
+        "questions": [scan_and_redact(q, context) for q in verdict["questions"]],
+    }
 
 
 def _run_triage(tick: Tick) -> str:
