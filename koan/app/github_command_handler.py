@@ -596,6 +596,10 @@ def build_mission_from_command(
     is_pr_target = bool(re.search(r"/pull/\d+$", web_url))
     if command_name == "fix" and is_pr_target:
         parts = ["/rebase", "--fix"]
+    elif skill.scope != "core":
+        # The runner resolves non-core skills only by their scoped name
+        # (translate_cli_skill_mission); a bare "/qa" fails as unknown.
+        parts = [f"/{skill.qualified_name}"]
     else:
         parts = [f"/{command_name}"]
     if web_url:

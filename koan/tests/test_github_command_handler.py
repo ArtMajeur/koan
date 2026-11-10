@@ -446,6 +446,21 @@ class TestBuildMissionFromCommand:
         )
         assert mission == "- [project:myproject] /rebase 📬"
 
+    def test_non_core_skill_uses_scoped_command(self, sample_notification):
+        """The runner only resolves non-core skills by their scoped name."""
+        skill = Skill(
+            name="qa", scope="testing", github_enabled=True,
+            github_context_aware=True, cli_skill="qa",
+            commands=[SkillCommand(name="qa")],
+        )
+        mission = build_mission_from_command(
+            skill, "qa", "", sample_notification, "koan"
+        )
+        assert mission == (
+            "- [project:koan] /testing.qa "
+            "https://github.com/sukria/koan/pull/42 📬"
+        )
+
 
 class TestExpandMultiTargetReviewMission:
     def test_splits_review_mission_into_individual_targets(self):
