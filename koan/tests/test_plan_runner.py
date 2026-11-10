@@ -1448,20 +1448,24 @@ class TestReviewLoop:
             )
         assert result == "improved plan"
 
-    def test_max_rounds_exhausted_returns_plan_with_warning(self):
+    def test_max_rounds_exhausted_posts_rewrite_of_last_review(self):
         review_results = [
-            (False, "- Phase 1: no file path"),
-            (False, "- Phase 1: no file path"),
-            (False, "- Phase 1: no file path"),
+            (False, "- round 1 issue"),
+            (False, "- round 2 issue"),
+            (False, "- round 3 issue"),
         ]
+        rewrites = ["rewrite 1", "rewrite 2", "rewrite 3"]
         with patch("app.plan_runner.review_plan", side_effect=review_results), \
-             patch("app.plan_runner._run_claude_plan", return_value="regen plan"):
+             patch("app.plan_runner._run_claude_plan", side_effect=rewrites), \
+             patch("app.plan_runner.load_prompt_or_skill", return_value="prompt") as mock_load:
             result = _review_loop(
                 "initial plan", "/project", idea="idea", context="",
                 skill_dir=self._skill_dir(), max_rounds=3,
             )
-        assert "⚠️" in result
-        assert "human review recommended" in result
+        # The last review's findings are fed into one more rewrite, which is
+        # posted as is: no warning lands in the plan's Open Questions section.
+        assert result == "rewrite 3"
+        assert "- round 3 issue" in mock_load.call_args.kwargs["CONTEXT"]
 
     def test_regen_failure_keeps_previous_plan(self):
         with patch("app.plan_runner.review_plan", return_value=(False, "- issue")), \
