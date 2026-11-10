@@ -861,17 +861,6 @@ def _review_loop(
         if issues:
             print(f"[plan_runner] Issues:\n{issues}", file=sys.stderr)
 
-        if round_num == max_rounds:
-            print(
-                f"[plan_runner] Max review rounds ({max_rounds}) exhausted — "
-                "posting best version with warning",
-                file=sys.stderr,
-            )
-            _record_plan_metric(
-                project_path, False, round_num, issues or "", project_name,
-            )
-            return current_plan + _review_warning_note(issues, max_rounds)
-
         # Note if the same issues recur
         if prev_issues and prev_issues == issues:
             print(
@@ -932,8 +921,16 @@ def _review_loop(
         else:
             print("[plan_runner] Re-generation returned empty — keeping previous plan", file=sys.stderr)
 
+    # The last review's findings were already fed into a rewrite, so no warning
+    # is appended: it would list items the posted plan may have fixed, and it
+    # would land inside the plan's Open Questions section.
+    print(
+        f"[plan_runner] Max review rounds ({max_rounds}) exhausted — "
+        "posting the rewrite of the last review",
+        file=sys.stderr,
+    )
     _record_plan_metric(
-        project_path, False, final_round, "loop exhausted", project_name,
+        project_path, False, final_round, prev_issues or "", project_name,
     )
     return current_plan
 
@@ -954,15 +951,6 @@ def _record_plan_metric(
         record_plan_metric(instance_dir, project_name, approved, rounds, issues_summary)
     except Exception as e:
         print(f"[plan_runner] Failed to record plan metric: {e}", file=sys.stderr)
-
-
-def _review_warning_note(issues: str, max_rounds: int) -> str:
-    """Build the warning note appended to a plan when review rounds are exhausted."""
-    return (
-        f"\n\n> ⚠️ Plan review flagged unresolved items after {max_rounds} rounds "
-        f"— human review recommended.\n>\n"
-        + "\n".join(f"> - {line.removeprefix('- ')}" for line in issues.splitlines() if line.strip())
-    )
 
 
 def _generate_plan(
