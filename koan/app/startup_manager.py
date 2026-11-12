@@ -719,7 +719,8 @@ MORNING_RITUAL_TRACKER = ".morning-ritual-last-run"
 def _morning_ritual_ran_today(instance: str) -> bool:
     try:
         last_run = (Path(instance) / MORNING_RITUAL_TRACKER).read_text().strip()
-    except OSError:
+    except (OSError, ValueError):
+        # Missing or undecodable marker: run the ritual rather than fail startup.
         return False
     return last_run == date.today().isoformat()
 
@@ -735,9 +736,11 @@ def _record_morning_ritual(instance: str) -> None:
 def _run_morning_ritual_phase(instance: str) -> None:
     """Run the morning ritual at most once per day, with its status pings.
 
-    The 🌅 start/complete and ⏭️ skipped lines are progress pings (INFO), so
-    ``notifications.min_priority: action`` keeps them out of chat. A failure
-    stays at the default priority: that one the operator needs to see.
+    The 🌅 start/complete lines are progress pings (INFO), so
+    ``notifications.min_priority: action`` keeps them out of chat. The ⚠️ failed
+    and ⏭️ skipped lines stay at the default priority: both mean no brief was
+    produced (run_ritual reports a CLI error or timeout by returning False, not
+    by raising), and that the operator needs to see.
     """
     from app.notify import NotificationPriority
     from app.notify_dedup import NOTICE_DEDUP_WINDOW_SECONDS
@@ -752,6 +755,9 @@ def _run_morning_ritual_phase(instance: str) -> None:
     def ping(message: str) -> None:
         _notify_raw(instance, message, dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
                     priority=NotificationPriority.INFO)
+
+    def alert(message: str) -> None:
+        _notify_raw(instance, message, dedup_window=NOTICE_DEDUP_WINDOW_SECONDS)
 
     ping("🌅 Running morning ritual (Claude CLI, up to ~90s)...")
     ritual_error = ""
@@ -769,7 +775,7 @@ def _run_morning_ritual_phase(instance: str) -> None:
         reason = f" ({ritual_error})" if ritual_error else ""
         _notify_raw(instance, f"⚠️ Morning ritual failed{reason} — preparing first iteration anyway.")
     else:
-        ping("⏭️ Morning ritual skipped — preparing first iteration.")
+        alert("⏭️ Morning ritual skipped — preparing first iteration.")
 
 
 # ---------------------------------------------------------------------------

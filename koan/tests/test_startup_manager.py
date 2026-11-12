@@ -901,6 +901,28 @@ class TestMorningRitualPhase:
             assert c.kwargs["priority"] == NotificationPriority.INFO
 
     @patch("app.run._notify_raw")
+    @patch("app.startup_manager.run_morning_ritual", return_value=False)
+    def test_skipped_keeps_default_priority(self, mock_ritual, mock_notify_raw, instance):
+        """run_ritual returns False on a CLI error or timeout, so "skipped" is
+        the real failure path: it must not be filtered out with the pings."""
+        from app.startup_manager import _run_morning_ritual_phase
+        _run_morning_ritual_phase(instance)
+
+        skipped = mock_notify_raw.call_args_list[-1]
+        assert "⏭️" in skipped.args[1]
+        assert "priority" not in skipped.kwargs
+
+    @patch("app.run._notify_raw")
+    @patch("app.startup_manager.run_morning_ritual", return_value=True)
+    def test_undecodable_marker_runs_ritual(self, mock_ritual, mock_notify_raw, instance):
+        from app.startup_manager import MORNING_RITUAL_TRACKER, _run_morning_ritual_phase
+        (Path(instance) / MORNING_RITUAL_TRACKER).write_bytes(b"\xff\xfe")
+
+        _run_morning_ritual_phase(instance)
+
+        assert mock_ritual.call_count == 1
+
+    @patch("app.run._notify_raw")
     @patch("app.startup_manager.run_morning_ritual", side_effect=RuntimeError("boom"))
     def test_failure_keeps_default_priority(self, mock_ritual, mock_notify_raw, instance):
         from app.startup_manager import _run_morning_ritual_phase

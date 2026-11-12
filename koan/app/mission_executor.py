@@ -805,11 +805,12 @@ def _run_iteration(
     if github_enabled or jira_enabled:
         force_notif_check = _consume_check_notifications_signal(koan_root)
 
-    # Check GitHub notifications before planning (converts @mentions to missions
-    # so plan_iteration() sees them immediately instead of waiting for sleep)
     # Cold-start banners that carry no event are progress pings: INFO, so a
     # min_priority of action keeps them out of chat after every deploy.
     from app.notify import NotificationPriority
+
+    # Check GitHub notifications before planning (converts @mentions to missions
+    # so plan_iteration() sees them immediately instead of waiting for sleep)
     gh_missions = 0
     if github_enabled:
         if is_first_iteration:
