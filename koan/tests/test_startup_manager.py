@@ -873,6 +873,17 @@ class TestMorningRitualPhase:
 
     @patch("app.run._notify_raw")
     @patch("app.startup_manager.run_morning_ritual", return_value=True)
+    @patch("app.config.get_morning_ritual_enabled", return_value=False)
+    def test_disabled_by_config_runs_nothing(self, _enabled, mock_ritual, mock_notify_raw, instance):
+        from app.startup_manager import MORNING_RITUAL_TRACKER, _run_morning_ritual_phase
+        _run_morning_ritual_phase(instance)
+
+        mock_ritual.assert_not_called()
+        mock_notify_raw.assert_not_called()
+        assert not (Path(instance) / MORNING_RITUAL_TRACKER).exists()
+
+    @patch("app.run._notify_raw")
+    @patch("app.startup_manager.run_morning_ritual", return_value=True)
     def test_runs_again_on_a_new_day(self, mock_ritual, mock_notify_raw, instance):
         from app.startup_manager import MORNING_RITUAL_TRACKER, _run_morning_ritual_phase
         (Path(instance) / MORNING_RITUAL_TRACKER).write_text("2000-01-01")

@@ -57,6 +57,16 @@
 # default to avoid unexpected Claude CLI calls at boot time.
 # startup_reflection: false
 
+# Morning ritual — the conversational morning brief posted to chat on the first
+# start of each calendar day (one Claude CLI call, up to ~90s of boot time).
+# Set to false to skip it entirely.
+# morning_ritual: true
+
+# Feature tips — the 💡 "Did you know?" messages sent while idle (at most one
+# every 6 h). Set to false to never send them. One-time feature notices use the
+# same channel and are silenced too.
+# feature_tips: true
+
 # Budget & Scheduling
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)

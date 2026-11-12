@@ -746,6 +746,11 @@ def _run_morning_ritual_phase(instance: str) -> None:
     from app.notify_dedup import NOTICE_DEDUP_WINDOW_SECONDS
     from app.run import _notify_raw, protected_phase
 
+    from app.config import get_morning_ritual_enabled
+    if not get_morning_ritual_enabled():
+        log("init", "Morning ritual disabled (morning_ritual: false) — skipping.")
+        return
+
     if _morning_ritual_ran_today(instance):
         log("init", "Morning ritual already ran today — skipping.")
         return
