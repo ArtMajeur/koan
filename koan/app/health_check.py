@@ -60,14 +60,14 @@ def check_and_alert(koan_root: str, max_age: int = DEFAULT_MAX_AGE) -> bool:
 
     age = get_file_age_seconds(path)
     if age is None:
-        format_and_send("Telegram bridge (awake.py) appears down — heartbeat file unreadable.")
+        format_and_send("Messaging bridge (awake.py) appears down — heartbeat file unreadable.")
         return False
 
     if age <= max_age:
         return True
 
     format_and_send(
-        f"Telegram bridge (awake.py) appears down — "
+        f"Messaging bridge (awake.py) appears down — "
         f"last heartbeat {age / 60:.0f} min ago."
     )
     return False

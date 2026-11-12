@@ -514,8 +514,8 @@ def cleanup_mission_history(instance: str):
 
 
 def check_health(koan_root: str, max_age: int = 120):
-    """Check Telegram bridge health (heartbeat age)."""
-    log("health", "Checking Telegram bridge health...")
+    """Check messaging bridge health (heartbeat age)."""
+    log("health", "Checking messaging bridge health...")
     from app.health_check import check_and_alert
     check_and_alert(koan_root, max_age=max_age)
 
