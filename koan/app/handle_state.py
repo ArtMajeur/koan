@@ -1,7 +1,8 @@
 """Persistent state and queue plumbing for the /handle pipeline.
 
-One JSON record per issue URL in ``instance/.handle-state.json`` holds the
-pipeline phase. The /handle runner reads and advances it; the ``## CI`` queue
+One JSON record per pipeline in ``instance/.handle-state.json`` holds its
+phase, keyed by the issue URL (by the PR's own URL for a pull-request
+pipeline). The /handle runner reads and advances it; the ``## CI`` queue
 relays terminal CI outcomes back through :func:`relay_ci_outcome`.
 
 Writes are serialized by a lock file; reads need no lock because every write
@@ -19,10 +20,10 @@ import time
 from pathlib import Path
 from typing import Callable, Iterator, Optional, Tuple
 
-from app.github_url_parser import ISSUE_URL_PATTERN
+from app.github_url_parser import PR_OR_ISSUE_PATTERN
 
 STATE_FILENAME = ".handle-state.json"
-_ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
+_RECORD_KEY_RE = re.compile(PR_OR_ISSUE_PATTERN)
 
 
 def _state_path(instance_dir: str) -> Path:
@@ -71,10 +72,19 @@ def same_pr_url(a: str, b: str) -> bool:
 
 
 def _record_for_pr(data: dict, pr_url: str) -> Optional[Tuple[str, dict]]:
-    for issue_url, record in data.items():
-        if isinstance(record, dict) and same_pr_url(record.get("pr_url", ""), pr_url):
-            return issue_url, record
-    return None
+    """``(key, record)`` of the pipeline tracking *pr_url*.
+
+    An issue's pipeline owns its PR: its record wins over a pull-request
+    pipeline's record for the same PR (the PR was handled before its issue).
+    """
+    own = None
+    for key, record in data.items():
+        if not (isinstance(record, dict) and same_pr_url(record.get("pr_url", ""), pr_url)):
+            continue
+        if not same_pr_url(key, pr_url):
+            return key, record
+        own = key, record
+    return own
 
 
 def load_record(instance_dir: str, issue_url: str) -> dict:
@@ -105,18 +115,21 @@ def reset_record(instance_dir: str, issue_url: str, **keep) -> None:
 
 
 def find_issue_for_pr(instance_dir: str, pr_url: str) -> Optional[str]:
-    """Return the issue URL whose record tracks *pr_url*, if any."""
+    """Return the key of the record tracking *pr_url*, if any.
+
+    That is an issue URL, or *pr_url* itself for a pull-request pipeline.
+    """
     found = _record_for_pr(_read_all(instance_dir), pr_url)
     return found[0] if found else None
 
 
 def tracks_mission(instance_dir: str, mission_title: str) -> bool:
-    """True when an active /handle pipeline owns an issue this mission targets.
+    """True when an active /handle pipeline is keyed by an issue or PR this mission names.
 
     Used to keep other automation (autoreview) from running a second
     review/fix loop on the PR the pipeline is driving.
     """
-    urls = [m.group(0) for m in _ISSUE_URL_RE.finditer(mission_title or "")]
+    urls = [m.group(0) for m in _RECORD_KEY_RE.finditer(mission_title or "")]
     if not urls or not _state_path(instance_dir).exists():
         return False
     data = _read_all(instance_dir)

@@ -4,16 +4,16 @@ title: "Skill Spec — handle"
 description: "Specifies the `/handle` skill, a resumable state machine that carries a GitHub issue from triage to a review-ready PR by chaining existing skills as separate missions and stopping at human gates."
 tags: [skill]
 created: 2026-11-09
-updated: 2026-11-09
+updated: 2026-11-12
 ---
 
 # Skill Spec — `handle`
 
 ## Command(s)
 
-- **Primary:** `/handle <github-issue-url> [context]`
+- **Primary:** `/handle <github-issue-or-pr-url> [context]`
 - **Group:** `code`
-- **GitHub:** `@<bot> handle` on the issue (or on the PR it opened)
+- **GitHub:** `@<bot> handle` on the issue, or on any pull request
 
 ## Purpose
 
@@ -54,6 +54,33 @@ after an error, a lost event file) it re-evaluates the phase.
 | `waiting_human` | any gate or error | a poke resumes the blocked step (`retry` re-runs the phase that errored) |
 | `stopped` | PR closed/merged, or issue closed | a poke: merged PR → says so; issue still closed → says so; closed PR → restart from triage; open PR → new fix round |
 
+### Pull-request pipeline
+
+`/handle` on a pull request that no pipeline tracks starts a pipeline **for that PR**:
+there is no issue to triage, plan or implement, so the PR itself is the subject. Its
+record is keyed by the PR's canonical URL, holds the PR as its `pr_url`, and enters `ci`
+directly; from there the phases above apply unchanged (CI → review/fix loop → optional QA
+→ hand-off). The requester rule is the same, with the PR author as the fallback; an
+`@<bot> handle` written as an inline review comment or in a review counts like one in
+the PR's comment thread.
+
+- **Where it differs:** the bot does not assign itself and makes no board moves (the
+  board tracks issues, and a PR may not be on it); comments go to the PR thread. The
+  hand-off requests no review when the requester is the PR's own author (GitHub refuses
+  that request); the author is still pinged.
+- **Entry checks:** to the API a PR is an issue, so a closed PR falls under the
+  closed-issue rule: it does not start, and reopening it then poking resumes. A merged
+  PR is answered as merged. A PR whose
+  head lives in a fork is refused with a comment and nothing queued: `/rebase --fix`
+  pushes to the head branch and the CI read looks up runs by branch name in the base
+  repository, neither of which reaches a fork.
+- **Re-entry:** a poke on a finished PR pipeline starts a new fix round while the PR is
+  open; a closed PR is never restarted from triage (there is no issue to restart from).
+- A PR that a tracked issue's pipeline opened keeps resolving to that issue, whether it
+  is addressed as `/pull/<n>` or `/issues/<n>`: the issue's pipeline owns it. That holds
+  when a PR pipeline also has a record for the same PR (the PR was handled on its own
+  before its issue was): the issue's record wins for pokes and CI relays.
+
 ### CI decision (phase `ci`)
 
 `check_existing_ci` reads `none` on a `gh` failure and aggregates the newest SHA among the
@@ -80,7 +107,7 @@ state) — it never asserts green from an earlier signal.
 
 | Input | Source | Required | Notes |
 |---|---|---|---|
-| issue URL | command arg | yes | a PR URL tracked by `/handle` resolves to its issue; the API's `html_url` is the canonical key |
+| issue or PR URL | command arg | yes | a PR URL tracked by an issue's pipeline resolves to that issue; any other PR URL is its own pipeline (see *Pull-request pipeline*); the API's `html_url` is the canonical key |
 | `after:<step>` | command arg | no | set by the pipeline only; marks a chained tick |
 | `handle:` | `config.yaml` | no | `max_review_rounds`, `poll_minutes`, `max_polls`, `ready_before_ci`, `board`, `product_team`, `qa` |
 | `handle.qa` | `projects.yaml` | no | per project (or under `defaults`); overrides the global `handle.qa` key by key |
@@ -198,7 +225,8 @@ resumes once someone has replied in either thread.
 |---|---|
 | not a GitHub URL | failure, nothing queued |
 | `github.nickname` not configured | fail fast, nothing posted |
-| PR URL with no pipeline | reply on the PR, nothing queued |
+| PR URL with no pipeline | start a pull-request pipeline at `ci` |
+| PR from a fork, no pipeline yet | reply on the PR, nothing queued |
 | PR closed or merged mid-pipeline | phase `stopped`, comment once |
 | issue closed (a merged or closed PR is reported first) | closing the issue calls the pipeline off: the next tick that would act comments once and sets `stopped`; a `/handle` on a closed issue does not start. A step already queued still runs. Reopen the issue and poke to resume |
 | any exception during a tick | error comment + `waiting_human` with `resume: retry` |
@@ -221,8 +249,9 @@ resumes once someone has replied in either thread.
   the gate. Only `@<bot> handle` moves such an issue. Best-effort like the autoreview guard:
   an unreadable state file is logged and the fallback proceeds.
 - **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`.
-- **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue an
-  active `/handle` pipeline tracks (`handle_state.tracks_mission`): a second review/fix
+- **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue
+  (or pull request, for a pull-request pipeline) an active `/handle` pipeline is keyed by
+  (`handle_state.tracks_mission`): a second review/fix
   loop would push new heads under the pipeline and race its `/review` steps.
 - **Plan:** `plan_runner.extract_open_questions()` — the same section boundaries the
   assumptions audit writes into.

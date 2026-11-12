@@ -61,6 +61,11 @@ class Tick:
         return bool(self.after)
 
     @property
+    def is_pr(self) -> bool:
+        """The pipeline drives a PR no issue pipeline tracks (see _adopt_pr)."""
+        return bool(self.issue.get("is_pr"))
+
+    @property
     def full_repo(self) -> str:
         return f"{self.owner}/{self.repo}"
 
@@ -108,10 +113,15 @@ def run_handle(
     issue_url = f"https://github.com/{owner}/{repo}/issues/{number}"
     tick = None
     try:
-        if kind == "pull":
-            issue_url = _issue_for_pr(owner, repo, number, instance_dir, bot)
-            if not issue_url:
-                return False, f"No /handle pipeline tracks {owner}/{repo}#{number}"
+        # A PR an issue's pipeline opened belongs to that issue, also when it is
+        # addressed as /issues/<n>; any other PR is a pipeline of its own, keyed
+        # by its own URL.
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{number}"
+        tracked = handle_state.find_issue_for_pr(instance_dir, pr_url)
+        if tracked:
+            issue_url = tracked
+        elif kind == "pull":
+            issue_url = pr_url
         tick = _load_tick(issue_url, project_path, project_name, instance_dir, bot, context)
         return _dispatch(tick)
     # Runner boundary: any failure is reported on the issue, never swallowed.
@@ -125,15 +135,6 @@ def _bot_login() -> str:
     from app.utils import load_config
 
     return get_github_nickname(load_config())
-
-
-def _issue_for_pr(owner: str, repo: str, number: str, instance_dir: str, bot: str) -> str:
-    tracked = handle_state.find_issue_for_pr(
-        instance_dir, f"https://github.com/{owner}/{repo}/pull/{number}",
-    )
-    if not tracked:
-        gh.post_comment(owner, repo, number, render("not_tracked", bot=bot))
-    return tracked or ""
 
 
 def _load_tick(
@@ -179,7 +180,7 @@ def _resolve_requester(tick: Tick) -> str:
     # A mention older than the last tick is not this poke (e.g. a poke from
     # chat): it must not hand the pipeline back to an earlier commenter.
     since = tick.record.get("updated_at", 0)
-    candidates = [gh.latest_handle_mention(tick.comments, tick.bot, since)]
+    candidates = [gh.latest_handle_mention(_mention_thread(tick), tick.bot, since)]
     if not stored:
         candidates.append(tick.issue.get("author", ""))
     for login in candidates:
@@ -189,6 +190,14 @@ def _resolve_requester(tick: Tick) -> str:
             tick.save(requester=login)
             return login
     return stored
+
+
+def _mention_thread(tick: Tick) -> List[dict]:
+    """Where a `@<bot> handle` can sit: on a PR, also in a review or an inline comment."""
+    if not tick.is_pr:
+        return tick.comments
+    activity = gh.fetch_review_activity(tick.owner, tick.repo, tick.number)
+    return sorted(tick.comments + activity, key=lambda c: c.get("created_at", 0))
 
 
 def _fail(
@@ -246,7 +255,9 @@ def _dispatch(tick: Tick) -> Result:
 def _pr(tick: Tick) -> dict:
     """The PR view, fetched once per tick: its head cannot move during a tick."""
     if tick.pr_view is None:
-        tick.pr_view = gh.pr_info(tick.owner, tick.repo, tick.pr_number)
+        # A pull-request pipeline is its own PR, known before the record names it.
+        number = tick.number if tick.is_pr else tick.pr_number
+        tick.pr_view = gh.pr_info(tick.owner, tick.repo, number)
     return tick.pr_view
 
 
@@ -258,12 +269,25 @@ def _head_ci(tick: Tick) -> str:
 
 
 def _start(tick: Tick) -> Result:
-    if tick.issue.get("is_pr"):
-        return False, f"{tick.issue_url} is a pull request, not an issue"
+    if tick.is_pr:
+        return _adopt_pr(tick)
     tick.save(project=tick.project_name, phase="triage")
     gh.assign_self(tick.owner, tick.repo, tick.number)
     _move_board(tick, "in_progress")
     return _triage(tick)
+
+
+def _adopt_pr(tick: Tick) -> Result:
+    """Drive a PR no issue pipeline tracks: it already exists, so start at CI."""
+    pr = _pr(tick)
+    if pr.get("isCrossRepository"):
+        # /rebase --fix pushes to the head branch and the CI read looks up runs
+        # by branch name in this repository: neither reaches a fork.
+        tick.comment("fork_pr")
+        return True, f"{tick.issue_url} comes from a fork; not handled"
+    tick.save(project=tick.project_name, pr_url=pr["url"], pr_number=tick.number,
+              branch=pr["headRefName"], review_round=0)
+    return _await_ci(tick)
 
 
 def _triage(tick: Tick) -> Result:
@@ -506,7 +530,9 @@ def _wait_for_preview(tick: Tick) -> Result:
 
 def _after_qa(tick: Tick) -> Result:
     """Hand off; say whether the QA run left a report (it may have timed out)."""
-    comments = gh.fetch_comments(tick.owner, tick.repo, tick.pr_number)
+    # A pull-request pipeline's own thread is the one this tick already read.
+    comments = tick.comments if tick.is_pr else gh.fetch_comments(
+        tick.owner, tick.repo, tick.pr_number)
     since = tick.record.get("phase_started_at", 0)
     report = gh.latest_bot_comment(comments, tick.bot, since, match=lambda body: QA_MARKER in body)
     return _finish(tick, qa_note=render("qa_ran" if report else "qa_no_report"))
@@ -534,7 +560,12 @@ def _ci_note(tick: Tick) -> str:
 
 
 def _reviewer(tick: Tick) -> str:
-    return "" if gh.same_login(tick.requester, tick.bot) else tick.requester
+    """Who the hand-off asks for a review: the requester, unless GitHub would refuse."""
+    if gh.same_login(tick.requester, tick.bot):
+        return ""
+    if tick.is_pr and gh.same_login(tick.requester, tick.issue.get("author") or ""):
+        return ""  # a review cannot be requested from the PR's own author
+    return tick.requester
 
 
 # -- re-entry, gates, shared steps ----------------------------------------------
@@ -586,7 +617,8 @@ def _replied_since_gate(tick: Tick) -> bool:
         return True
     threads = list(tick.comments)
     if tick.record.get("pr_number"):
-        threads += gh.fetch_comments(tick.owner, tick.repo, tick.pr_number)
+        if not tick.is_pr:  # a pull-request pipeline's thread is tick.comments already
+            threads += gh.fetch_comments(tick.owner, tick.repo, tick.pr_number)
         threads += gh.fetch_review_activity(tick.owner, tick.repo, tick.pr_number)
     return any(
         c.get("created_at", 0) > gated_at and not c.get("is_bot")
@@ -606,8 +638,16 @@ def _issue_closed(tick: Tick) -> bool:
 
 
 def _stop_on_closed_issue(tick: Tick) -> Result:
-    """Closing the issue is how a human calls the pipeline off."""
-    tick.comment("issue_closed")
+    """Closing the issue is how a human calls the pipeline off.
+
+    A pull-request pipeline's "issue" is the PR itself, closed or merged.
+    """
+    if not tick.is_pr:
+        tick.comment("issue_closed")
+    elif _pr(tick)["state"] == "MERGED":
+        tick.comment("merged", pr_url=tick.issue_url)
+    else:
+        tick.comment("pr_closed")
     tick.save(phase="stopped", resume=None)
     return True, f"{tick.issue_url} is closed; pipeline stopped"
 
@@ -673,6 +713,8 @@ def _recheck_pending(tick: Tick, after: str) -> bool:
 
 
 def _move_board(tick: Tick, column_key: str) -> None:
+    if tick.is_pr:
+        return  # the board tracks issues; adding a PR to it would be noise
     board = tick.config["board"]
     column = board.get(column_key) or ""
     error = gh.move_on_board(board, tick.issue.get("node_id", ""), column)

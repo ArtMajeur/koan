@@ -66,6 +66,10 @@ _TEMPLATES = {
             "This issue is closed — I stop handling it. Reopen it and comment "
             "`@{bot} handle` to pick it up again."
         ),
+        "pr_closed": (
+            "This pull request is closed — I stop handling it. Reopen it and comment "
+            "`@{bot} handle` to pick it up again."
+        ),
         "busy": "Already on it — current step: {phase}.",
         "gate_open": (
             "{mention}I'm still waiting for a reply to the question above. Answer in this "
@@ -75,7 +79,10 @@ _TEMPLATES = {
             "{mention}I hit an error at step `{phase}`: {error}\n\n"
             "Comment `@{bot} handle` to retry that step."
         ),
-        "not_tracked": "No pipeline found for this pull request; run `@{bot} handle` on its issue.",
+        "fork_pr": (
+            "{mention}This pull request comes from a fork: I can't push fixes to its "
+            "branch, so I won't handle it."
+        ),
         "state_closed": "closed",
         "state_merged": "merged",
     },
@@ -142,6 +149,10 @@ _TEMPLATES = {
             "Cette issue est fermée — j'arrête de la traiter. Rouvrez-la et commentez "
             "`@{bot} handle` pour reprendre."
         ),
+        "pr_closed": (
+            "Cette pull request est fermée — j'arrête de la traiter. Rouvrez-la et "
+            "commentez `@{bot} handle` pour reprendre."
+        ),
         "busy": "Déjà en cours — étape actuelle : {phase}.",
         "gate_open": (
             "{mention}J'attends encore une réponse à la question ci-dessus. Répondez dans ce "
@@ -151,8 +162,9 @@ _TEMPLATES = {
             "{mention}J'ai rencontré une erreur à l'étape `{phase}` : {error}\n\n"
             "Commentez `@{bot} handle` pour relancer cette étape."
         ),
-        "not_tracked": (
-            "Aucun suivi pour cette pull request ; lancez `@{bot} handle` sur son issue."
+        "fork_pr": (
+            "{mention}Cette pull request vient d'un fork : je ne peux pas pousser de "
+            "correctifs sur sa branche, donc je ne la traite pas."
         ),
         "state_closed": "fermée",
         "state_merged": "fusionnée",

@@ -1168,7 +1168,7 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
     elif canonical == "handle":
         if not (_ISSUE_URL_RE.search(args) or _PR_URL_RE.search(args)):
             return (
-                f"/{command} requires a GitHub issue URL "
+                f"/{command} requires a GitHub issue or PR URL "
                 f"(e.g. https://github.com/owner/repo/issues/42)"
             )
     elif canonical == "check_need":

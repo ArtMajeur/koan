@@ -69,7 +69,9 @@ def fetch_comments(owner: str, repo: str, number: str) -> List[dict]:
 
 
 def fetch_review_activity(owner: str, repo: str, number: str) -> List[dict]:
-    """A PR's inline review comments and submitted reviews: ``{author, is_bot, created_at}``.
+    """A PR's inline review comments and submitted reviews.
+
+    Each is ``{author, is_bot, body, created_at}`` (epoch).
 
     They live outside the comment thread ``fetch_comments`` reads.
     """
@@ -78,7 +80,7 @@ def fetch_review_activity(owner: str, repo: str, number: str) -> List[dict]:
         raw = run_gh(
             "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/{path}",
             "--jq", f".[] | select(.{stamp} != null) | {{author: .user.login,"
-                    f' is_bot: (.user.type == "Bot"), created_at: .{stamp}}}',
+                    f' is_bot: (.user.type == "Bot"), body, created_at: .{stamp}}}',
         )
         activity += [json.loads(line) for line in raw.splitlines() if line.strip()]
     for item in activity:
@@ -195,10 +197,13 @@ def find_open_pr(owner: str, repo: str, branch: str, bot: str) -> Optional[dict]
 
 
 def pr_info(owner: str, repo: str, number: str) -> dict:
-    """``{state, headRefOid, isDraft, url}`` of a PR (state: OPEN/CLOSED/MERGED)."""
+    """``{state, headRefOid, headRefName, isCrossRepository, isDraft, url}`` of a PR.
+
+    state is OPEN, CLOSED or MERGED.
+    """
     data = _json(run_gh(
         "pr", "view", number, "--repo", f"{owner}/{repo}",
-        "--json", "state,headRefOid,isDraft,url",
+        "--json", "state,headRefOid,headRefName,isCrossRepository,isDraft,url",
     ))
     if not data:
         raise RuntimeError(f"empty response for PR {owner}/{repo}#{number}")
