@@ -11,14 +11,17 @@ VERDICTS = ("go", "needs_human", "not_a_bug")
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _COMMENT_FOOTER = "\n---\n"
 # The whole section must be one "none" line, optionally followed by "ready to
-# implement" and nothing else: "None — ready to implement.", "No open
-# questions.", "N/A". "None of these block, but: …", "N/A — but please confirm
-# …" and "None: <anything>" are questions.
+# implement": "None — ready to implement.", "No open questions.", "N/A".
+# After "ready to implement" the model often adds a note on what was settled
+# ("None, ready to implement. Approach B was rejected on …"); that note is
+# accepted as long as it asks nothing (no "?"). "None of these block, but: …",
+# "N/A — but please confirm …" and "None: <anything>" are questions.
 _NO_QUESTIONS_RE = re.compile(
     r"^[\s*_>•-]*"
     r"(?:none|n/?a|no(?:\s+open)?\s+questions?|aucune?(?:\s+questions?(?:\s+ouvertes?)?)?)"
     r"[\s*_.]*"
-    r"(?:[—–:-]\s*(?:ready\s+to\s+implement|prête?\s+à\s+implémenter)[\s*_.!]*)?$",
+    r"(?:[—–:,;-]\s*(?:ready\s+to\s+implement|prête?\s+à\s+implémenter)"
+    r"(?:[.!]\s+[^?]*)?[\s*_.!]*)?$",
     re.IGNORECASE,
 )
 
