@@ -32,6 +32,28 @@ def test_required_env_accepts_api_key(monkeypatch):
     assert railway.required_env_present() is True
 
 
+def test_required_env_accepts_slack_without_telegram(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    monkeypatch.setenv("GH_TOKEN", "gh")
+    monkeypatch.delenv("KOAN_TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("KOAN_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setenv("KOAN_SLACK_BOT_TOKEN", "xoxb")
+    monkeypatch.setenv("KOAN_SLACK_APP_TOKEN", "xapp")
+    monkeypatch.setenv("KOAN_SLACK_CHANNEL_ID", "C1")
+    assert railway.required_env_present() is True
+
+
+def test_required_env_rejects_partial_slack(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    monkeypatch.setenv("GH_TOKEN", "gh")
+    monkeypatch.delenv("KOAN_TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("KOAN_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setenv("KOAN_SLACK_BOT_TOKEN", "xoxb")
+    monkeypatch.delenv("KOAN_SLACK_APP_TOKEN", raising=False)
+    monkeypatch.delenv("KOAN_SLACK_CHANNEL_ID", raising=False)
+    assert railway.required_env_present() is False
+
+
 def test_required_env_missing(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
