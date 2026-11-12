@@ -21,6 +21,17 @@ SKILL_COMPLETION = {
     "speckit": ("📐", "Specified", "Speckit"),
 }
 
+# /handle tick milestone → (icon, label). The pipeline's own chat lines: a
+# human poke that moved it on, a stop at a human gate, the hand-off, a poke
+# it declines or that ends it.
+PIPELINE_MILESTONES = {
+    "progress": ("✅", "Handling"),
+    "stopped": ("⏹", "Not handling"),
+    "gate": ("⏸", "Needs you:"),
+    "handoff": ("✅", "Ready for your review:"),
+}
+PIPELINE_EMOJI = "🧭"
+
 FAIL_ICON = "❌"
 NO_REASON_GIVEN = "No reason given."
 
@@ -30,6 +41,7 @@ OK_MARKER = "KOAN_OUTCOME_OK:"  # always printed: the runner reported, its URL i
 URL_MARKER = "KOAN_OUTCOME_URL:"
 DETAIL_MARKER = "KOAN_OUTCOME_DETAIL:"
 REASON_MARKER = "KOAN_OUTCOME_REASON:"
+MILESTONE_MARKER = "KOAN_OUTCOME_MILESTONE:"  # a /handle tick: a PIPELINE_MILESTONES key
 
 _REASON_MAX_CHARS = 500
 
@@ -50,6 +62,12 @@ def failure_line(project: str, skill: str, subject: str, icon: str = FAIL_ICON) 
     return f"{icon} {_tag(project)}{emoji} {noun} failed: {subject}".rstrip(": ")
 
 
+def pipeline_line(project: str, milestone: str, url: str) -> str:
+    """``⏸ [p] 🧭 Needs you: <url>`` — *milestone* must be a ``PIPELINE_MILESTONES`` key."""
+    icon, label = PIPELINE_MILESTONES[milestone]
+    return f"{icon} {_tag(project)}{PIPELINE_EMOJI} {label} {url}".rstrip()
+
+
 def one_line_reason(reason: str) -> str:
     """*reason* on one line, capped, for the line under a failure."""
     reason = " ".join((reason or "").split())
@@ -63,11 +81,15 @@ def message(first_line: str, *below: str) -> str:
     return "\n".join([first_line, *(b for b in below if b)])
 
 
-def markers(url: str = "", detail: str = "", reason: str = "", ok: bool = True) -> str:
+def markers(
+    url: str = "", detail: str = "", reason: str = "", ok: bool = True, milestone: str = "",
+) -> str:
     """The stdout markers that hand an outcome over to the agent loop."""
     lines = [f"{OK_MARKER} {1 if ok else 0}"]
     if url:
         lines.append(f"{URL_MARKER} {url}")
+    if milestone:
+        lines.append(f"{MILESTONE_MARKER} {milestone}")
     if not ok:
         lines.append(f"{REASON_MARKER} {one_line_reason(reason)}")
     lines += [f"{DETAIL_MARKER} {line}" for line in (detail or "").splitlines()]
@@ -75,12 +97,13 @@ def markers(url: str = "", detail: str = "", reason: str = "", ok: bool = True) 
 
 
 def read_markers(stdout: str) -> dict:
-    """``{"reported", "url", "reason", "detail"}`` from a runner's stdout.
+    """``{"reported", "url", "reason", "detail", "milestone"}`` from a runner's stdout.
 
     ``reported`` is true once any outcome was handed over. The last URL /
-    REASON marker wins; DETAIL lines are joined in order.
+    REASON / MILESTONE marker wins (an unknown milestone reads as none); DETAIL
+    lines are joined in order.
     """
-    found = {"reported": False, "url": "", "reason": "", "detail": []}
+    found = {"reported": False, "url": "", "reason": "", "detail": [], "milestone": ""}
     for line in (stdout or "").splitlines():
         if line.startswith(OK_MARKER):
             found["reported"] = True
@@ -88,6 +111,9 @@ def read_markers(stdout: str) -> dict:
             found["url"] = line[len(URL_MARKER):].strip()
         elif line.startswith(REASON_MARKER):
             found["reason"] = line[len(REASON_MARKER):].strip()
+        elif line.startswith(MILESTONE_MARKER):
+            milestone = line[len(MILESTONE_MARKER):].strip()
+            found["milestone"] = milestone if milestone in PIPELINE_MILESTONES else ""
         elif line.startswith(DETAIL_MARKER):
             found["detail"].append(line[len(DETAIL_MARKER):].removeprefix(" "))
     found["detail"] = "\n".join(found["detail"])

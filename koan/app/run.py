@@ -1048,13 +1048,37 @@ def _completion_pr_url(instance, project_name):
         return ""
 
 
-def _completion_message(project_name: str, mission_title: str, url: str, detail: str) -> str:
-    """Fixed success line ("✅ [p] 🔍 Reviewed <url>" / "✅ [p] Done: <title>") + detail."""
+def _display_title(mission_title: str) -> str:
+    """*mission_title* without what the queue appended (📬, ⏳(…), [r:N]…)."""
+    from app.missions import strip_all_lifecycle_markers, strip_system_metadata
+    return strip_system_metadata(strip_all_lifecycle_markers(mission_title))
+
+
+def _completion_message(
+    project_name: str, mission_title: str, url: str, detail: str, milestone: str = "",
+) -> str:
+    """Fixed success line + detail: "✅ [p] 🔍 Reviewed <url>" for a tracked skill,
+    "⏸ [p] 🧭 Needs you: <url>" for a /handle tick, else "✅ [p] Done: <title>"."""
     from app import outcome_line as ol
+    if milestone:
+        return ol.message(ol.pipeline_line(project_name, milestone, url), detail)
     skill = _tracked_skill(mission_title)
     if not skill:
-        return ol.message(f"✅ [{project_name}] Done: {mission_title}", detail)
+        return ol.message(f"✅ [{project_name}] Done: {_display_title(mission_title)}", detail)
     return ol.message(ol.success_line(project_name, skill, url), detail)
+
+
+def _pipeline_owns(instance: str, mission_title: str) -> bool:
+    """True when a /handle pipeline queued this mission for itself (a step, a CI fix).
+
+    An unreadable pipeline state reports the mission rather than hide it.
+    """
+    try:
+        from app.handle_state import owns_mission
+        return owns_mission(instance, mission_title)
+    except (OSError, RuntimeError, ValueError) as e:
+        log("error", f"/handle state unreadable, reporting the mission: {e}")
+        return False
 
 
 def _failure_message(
@@ -1074,7 +1098,7 @@ def _failure_message(
     if skill:
         line = ol.failure_line(project_name, skill, url or mission_title, icon=icon)
     else:
-        line = f"{icon} [{project_name}] Failed: {mission_title}"
+        line = f"{icon} [{project_name}] Failed: {_display_title(mission_title)}"
     if not reason and sole_reporter:
         reason = ol.NO_REASON_GIVEN
     return ol.message(line, reason, detail)
@@ -1091,6 +1115,7 @@ def _notify_mission_normal(
     reason: str = "",
     detail: str = "",
     reported: bool = False,
+    milestone: str = "",
 ) -> bool:
     """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end.
 
@@ -1133,15 +1158,18 @@ def _notify_mission_normal(
         )
         return False
 
-    # Same for a tick a pipeline queued for itself (`/handle <url> after:<step>`):
-    # one "Done" line per tick would bury the steps' own outcome messages. What
-    # needs a human reaches them as a comment on the issue.
+    # A pipeline (/handle) reports its milestones only: a human poke, a stop at
+    # a gate, the hand-off. The ticks it queues for itself (`after:<step>`) and
+    # its step missions are logged; one line per step and per fix round would
+    # bury the message that asks for a human. A chained tick that finds the
+    # issue or PR closed is logged too: a human closed it.
     from app.missions import is_continuation_mission
-    if is_continuation_mission(title):
+    quiet_tick = is_continuation_mission(title) and milestone in ("", "progress", "stopped")
+    if quiet_tick or (not milestone and _pipeline_owns(instance, title)):
         from app.run_log import log_safe
         log_safe(
             "mission",
-            f"[{project_name}] Done: {title} (normal mode, pipeline tick suppressed)",
+            f"[{project_name}] Done: {title} (normal mode, pipeline step suppressed)",
         )
         return False
 
@@ -1149,9 +1177,14 @@ def _notify_mission_normal(
     # the URL captured during post-mission processing (before pending.md was
     # deleted); fall back to a best-effort re-read.
     url = ""
-    if skill:
+    if milestone:
+        url = pr_url
+    elif skill:
         url = pr_url if reported else (pr_url or _completion_pr_url(instance, project_name))
-    _notify(instance, _completion_message(project_name, title, url, detail), verbatim=True)
+    _notify(
+        instance, _completion_message(project_name, title, url, detail, milestone),
+        verbatim=True,
+    )
     return True
 
 
@@ -1189,6 +1222,7 @@ def _notify_mission_end(
     reason: str = "",
     detail: str = "",
     reported: bool = False,
+    milestone: str = "",
 ):
     """Send the end-of-mission message, then a Skuggi nudge when one is due.
 
@@ -1197,7 +1231,7 @@ def _notify_mission_end(
     """
     notified = _notify_mission_outcome(
         instance, project_name, run_num, max_runs, exit_code,
-        mission_title, pr_url, reason, detail, reported,
+        mission_title, pr_url, reason, detail, reported, milestone,
     )
     if not notified:
         return
@@ -1216,6 +1250,7 @@ def _notify_mission_outcome(
     reason: str = "",
     detail: str = "",
     reported: bool = False,
+    milestone: str = "",
 ) -> bool:
     """Send a notification when a mission or autonomous run completes.
 
@@ -1223,7 +1258,8 @@ def _notify_mission_outcome(
     reformatted), and is the same in both messaging levels:
 
     - success: ``✅ [project] 🔍 Reviewed <url>`` for tracked skills,
-      ``✅ [project] Done: <title>`` for other operator missions;
+      ``✅ [project] Done: <title>`` for other operator missions, and for a
+      /handle tick the line of its *milestone* (``⏸ [project] 🧭 Needs you: <url>``);
     - failure: ``❌ [project] 🔍 Review failed: <url>`` (or ``Failed: <title>``)
       with *reason* on the next line.
 
@@ -1233,20 +1269,23 @@ def _notify_mission_outcome(
 
     Honors messaging.level:
     - normal (default): only that message. Genuinely autonomous background
-      runs (no mission title) are logged only (no bridge push).
+      runs (no mission title) are logged only (no bridge push), and so is what
+      a /handle pipeline queued for itself, short of a gate or the hand-off.
     - debug: every run is reported; the run counter and the journal summary
       (or failure context) follow. The runner also sends its own message.
     """
     if not is_debug():
         return _notify_mission_normal(
             instance, project_name, run_num, max_runs,
-            exit_code, mission_title, pr_url, reason, detail, reported,
+            exit_code, mission_title, pr_url, reason, detail, reported, milestone,
         )
 
     title = (mission_title or "").strip()
-    url = pr_url if _tracked_skill(title) else ""
+    url = pr_url if (milestone or _tracked_skill(title)) else ""
     if exit_code == 0:
-        msg = _completion_message(project_name, title or "Autonomous run", url, detail)
+        msg = _completion_message(
+            project_name, title or "Autonomous run", url, detail, milestone,
+        )
         journal = _journal_detail("get_mission_summary", instance, project_name)
     else:
         # Debug mode never hands the runner's outcome over: it sends its own.

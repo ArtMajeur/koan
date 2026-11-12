@@ -16,7 +16,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from app import handle_state
 from skills.core.handle import handle_ci
@@ -37,6 +37,29 @@ QA_MARKER = "<!-- koan-handle-qa -->"
 Result = Tuple[bool, str]
 
 
+class Outcome(NamedTuple):
+    """What a tick hands the agent loop for its one chat message."""
+
+    ok: bool
+    summary: str
+    milestone: str = "progress"  # an outcome_line.PIPELINE_MILESTONES key
+    url: str = ""
+    note: str = ""  # the line under the chat message; the summary when empty
+
+
+# Chat's one line on why the pipeline stopped, per gate comment key.
+_GATE_NOTES = {
+    "triage_needs_human": "Triage needs an answer",
+    "triage_not_a_bug": "Triage found no code change to make",
+    "plan_questions": "The plan has open questions",
+    "plan_missing": "No fresh plan was produced",
+    "implement_no_pr": "The implementation opened no pull request",
+    "ci_blocked": "CI is stuck ({outcome}): {pr_url}",
+    "review_exhausted": "Review still blocking after {rounds} fix rounds: {pr_url}",
+    "review_missing": "The review left no verdict for the latest commit: {pr_url}",
+}
+
+
 @dataclass
 class Tick:
     issue_url: str
@@ -54,6 +77,8 @@ class Tick:
     comments: List[dict] = field(default_factory=list)
     requester: str = ""
     pr_view: Optional[dict] = field(default=None, repr=False)
+    milestone: str = "progress"
+    note: str = ""
 
     @property
     def chained(self) -> bool:
@@ -100,16 +125,16 @@ def _mention(login: str) -> str:
 
 def run_handle(
     url: str, project_path: str, project_name: str, instance_dir: str, context: str = "",
-) -> Result:
+) -> Outcome:
     from app.github_url_parser import parse_github_url
 
     bot = _bot_login()
     if not bot:
-        return False, "github.nickname is not configured; /handle needs the bot login"
+        return Outcome(False, "github.nickname is not configured; /handle needs the bot login")
     try:
         owner, repo, kind, number = parse_github_url(url)
     except ValueError as e:
-        return False, f"Not a GitHub URL: {e}"
+        return Outcome(False, f"Not a GitHub URL: {e}")
     issue_url = f"https://github.com/{owner}/{repo}/issues/{number}"
     tick = None
     try:
@@ -123,11 +148,14 @@ def run_handle(
         elif kind == "pull":
             issue_url = pr_url
         tick = _load_tick(issue_url, project_path, project_name, instance_dir, bot, context)
-        return _dispatch(tick)
+        ok, summary = _dispatch(tick)
+        subject = tick.pr_url if tick.milestone == "handoff" else tick.issue_url
+        return Outcome(ok, summary, tick.milestone, subject, tick.note)
     # Runner boundary: any failure is reported on the issue, never swallowed.
     except Exception as e:
         target = (tick.owner, tick.repo, tick.number) if tick else (owner, repo, number)
-        return _fail(tick, target, bot, instance_dir, tick.issue_url if tick else issue_url, e)
+        return Outcome(
+            *_fail(tick, target, bot, instance_dir, tick.issue_url if tick else issue_url, e))
 
 
 def _bot_login() -> str:
@@ -239,7 +267,7 @@ def _dispatch(tick: Tick) -> Result:
         return True, f"Stale after:{tick.after} tick ignored in phase {phase or 'new'}"
     if phase in ("done", "stopped"):
         return _reenter(tick)
-    if not tick.chained and phase in _STEP_PHASES and _follow_up_pending(tick, phase):
+    if not tick.chained and phase in handle_state.STEP_PHASES and _follow_up_pending(tick, phase):
         # The step is queued or running and its own tick will judge it; a poke
         # evaluating it now would read "no output" and gate by mistake.
         return _waiting(tick, phase)
@@ -284,6 +312,7 @@ def _adopt_pr(tick: Tick) -> Result:
         # /rebase --fix pushes to the head branch and the CI read looks up runs
         # by branch name in this repository: neither reaches a fork.
         tick.comment("fork_pr")
+        tick.milestone, tick.note = "stopped", "The pull request comes from a fork"
         return True, f"{tick.issue_url} comes from a fork; not handled"
     tick.save(project=tick.project_name, pr_url=pr["url"], pr_number=tick.number,
               branch=pr["headRefName"], review_round=0)
@@ -544,19 +573,28 @@ def _finish(tick: Tick, qa_note: str) -> Result:
                    is_draft=bool(_pr(tick).get("isDraft")))
     product = gh.is_team_member(tick.owner, tick.config["product_team"], tick.requester)
     _move_board(tick, "product_review" if product else "review")
-    tick.comment("done", pr_url=pr_url, ci_note=_ci_note(tick), qa_note=qa_note)
+    state = _head_ci(tick)
+    tick.comment("done", pr_url=pr_url, ci_note=_ci_note(state), qa_note=qa_note)
     tick.save(phase="done", resume=None)
+    tick.milestone, tick.note = "handoff", _ci_chat_note(state)
     return True, f"{pr_url} handed off to @{tick.requester or '(nobody)'}"
 
 
-def _ci_note(tick: Tick) -> str:
+def _ci_note(state: str) -> str:
     """State the head's CI as it is now, never as an assumption."""
-    state = _head_ci(tick)
     if state == "success":
         return render("ci_green")
     if state in ("no_ci", "missing"):
         return render("ci_none")
     return render("ci_other", state=state)
+
+
+def _ci_chat_note(state: str) -> str:
+    if state == "success":
+        return "CI green"
+    if state in ("no_ci", "missing"):
+        return "No CI ran on the latest commit"
+    return f"CI on the latest commit is {state}"
 
 
 def _reviewer(tick: Tick) -> str:
@@ -577,6 +615,7 @@ def _reenter(tick: Tick) -> Result:
     if state == "MERGED":
         tick.comment("merged", pr_url=tick.pr_url)
         tick.save(phase="stopped")
+        tick.milestone, tick.note = "stopped", "The pull request is already merged"
         return True, f"{tick.pr_url} already merged"
     if _issue_closed(tick):
         return _stop_on_closed_issue(tick)
@@ -601,6 +640,7 @@ def _resume(tick: Tick) -> Result:
         # predates its question: resuming would redo the step unanswered.
         gh.post_comment(tick.owner, tick.repo, tick.number,
                         render("gate_open", mention="", bot=tick.bot))
+        tick.milestone, tick.note = "gate", "Still waiting for an answer in the thread"
         return True, f"Gate still open on {tick.issue_url}: no reply since the question"
     return _RESUME[resume](tick)
 
@@ -630,6 +670,7 @@ def _replied_since_gate(tick: Tick) -> bool:
 def _stop(tick: Tick, state: str) -> Result:
     tick.comment("stopped", pr_url=tick.pr_url, state=render(f"state_{state}"))
     tick.save(phase="stopped", resume=None)
+    tick.milestone, tick.note = "stopped", f"The pull request is {state}"
     return True, f"{tick.pr_url} {state}; pipeline stopped"
 
 
@@ -644,24 +685,34 @@ def _stop_on_closed_issue(tick: Tick) -> Result:
     """
     if not tick.is_pr:
         tick.comment("issue_closed")
+        tick.note = "The issue is closed"
     elif _pr(tick)["state"] == "MERGED":
         tick.comment("merged", pr_url=tick.issue_url)
+        tick.note = "The pull request is merged"
     else:
         tick.comment("pr_closed")
+        tick.note = "The pull request is closed"
+    tick.milestone = "stopped"
     tick.save(phase="stopped", resume=None)
     return True, f"{tick.issue_url} is closed; pipeline stopped"
 
 
 def _queue(tick: Tick, command: str, after: str, phase: str) -> Result:
     handle_state.queue_step(tick.instance_dir, tick.project_name, tick.issue_url, command, after)
-    tick.save(phase=phase, phase_started_at=time.time(), resume=None)
+    # `step` lets the agent loop tell this mission from an operator's own.
+    tick.save(phase=phase, phase_started_at=time.time(), resume=None, step=command)
+    tick.note = f"{command.split()[0]} queued"
     return True, f"Queued {command.split()[0]} for {tick.issue_url}"
 
 
 def _gate(tick: Tick, key: str, resume: str, **values) -> Result:
+    # Built first: a gate key without a chat note must fail before the comment
+    # and the phase change, not leave a gate that then reports as an error.
+    note = _GATE_NOTES[key].format(**values)
     gated_at = time.time()
     tick.comment(key, **values)
     tick.save(phase="waiting_human", resume=resume, gated_at=gated_at)
+    tick.milestone, tick.note = "gate", note
     return True, f"Waiting for a human ({key}) on {tick.issue_url}"
 
 
@@ -739,9 +790,6 @@ _EXPECTED_AFTER: Dict[str, Tuple[str, ...]] = {
     "qa_running": ("qa",),
 }
 
-# Phases waiting on a queued step mission whose follow-up tick will judge it.
-_STEP_PHASES = ("planning", "implementing", "reviewing", "fixing", "qa_running")
-
 _PHASES: Dict[str, Callable[[Tick], Result]] = {
     "triage": _triage,
     "planning": _after_plan,
@@ -775,12 +823,24 @@ def main(argv: Optional[list] = None) -> None:
     parser.add_argument("--base-branch", default="")
     args = parser.parse_args(argv)
 
-    success, summary = run_handle(
+    outcome = run_handle(
         args.issue_url, args.project_path, args.project_name, args.instance_dir,
         context=args.context,
     )
-    print(summary)
-    sys.exit(0 if success else 1)
+    print(outcome.summary)
+    print(_handover(outcome), flush=True)
+    sys.exit(0 if outcome.ok else 1)
+
+
+def _handover(outcome: Outcome) -> str:
+    """The tick's outcome as stdout markers: the agent loop sends the chat message."""
+    from app import outcome_line as ol
+    from app.leak_detector import redact_secrets
+
+    text = redact_secrets(outcome.note or outcome.summary)[0]
+    if not outcome.ok:
+        return ol.markers(reason=text, ok=False)
+    return ol.markers(url=outcome.url, detail=text, milestone=outcome.milestone)
 
 
 if __name__ == "__main__":

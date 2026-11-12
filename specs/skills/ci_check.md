@@ -4,7 +4,7 @@ title: "Skill Spec — ci_check"
 description: "Specifies the `/ci_check` skill, which checks a PR's CI status, runs the shared CI-fix loop on failures, and toggles automatic CI-fix dispatch."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-10
+updated: 2026-11-12
 ---
 
 # Skill Spec — `ci_check`
@@ -43,6 +43,9 @@ The system has two halves that must stay decoupled:
    `CI_QUEUE_SLEEP_INTERVAL`) from the interruptible sleep loop. One non-blocking status check
    per `## CI` PR. On failure it injects a `/ci_check <url>` fix mission **non-urgently**
    (FIFO), so CI fixing never jumps ahead of `/rebase` / `/review` / `/implement` backlog work.
+   Its chat lines about a PR (passed, gave up, blocked, closed) are sent only when no
+   `/handle` pipeline drives that PR — the pipeline is woken by the relay and reports
+   itself (`specs/skills/handle.md` → *Chat*).
 2. **Fix mission** — the injected `/ci_check <url>` runs in the single mission slot. It performs
    **at most `get_ci_check_max_fix_attempts()` internal Claude fix steps (default 1)** and then
    returns, yielding the queue. The `## CI` item's `max_attempts` (config `ci_fix_max_attempts`,

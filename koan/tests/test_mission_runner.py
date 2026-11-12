@@ -4340,6 +4340,7 @@ class TestOutcomeFromStdout:
         assert outcome_from_stdout(out) == {
             "pr_url": "https://github.com/o/r/pull/1", "reason": "", "detail": "",
             "reported": False,
+            "milestone": "",
         }
         assert outcome_from_stdout("")["pr_url"] == ""
 

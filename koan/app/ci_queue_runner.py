@@ -4,7 +4,8 @@ Two roles:
 
 1. **drain_one(instance_dir)** — called from the iteration loop.  Reads the
    ## CI section from missions.md and checks each entry non-blocking.
-   - Pass → remove from ## CI, write outbox success message.
+   - Pass → remove from ## CI, write outbox success message (no message for
+            a PR a /handle pipeline drives: the pipeline reports itself).
    - Fail → increment attempt counter, inject ``/ci_check <url>`` mission.
             If max attempts reached, remove from ## CI, write outbox failure.
    - Pending/running → skip (check again next iteration).
@@ -90,8 +91,8 @@ def drain_one(instance_dir: str) -> Optional[str]:
             lambda c: remove_ci_item(c, pr_url),
         )
         if pr_state == "CLOSED":
-            _write_outbox(
-                instance_dir,
+            _tell_chat(
+                instance_dir, pr_url,
                 f"🚫 PR #{pr_number} was closed — removed from CI queue: {pr_url}",
             )
         _relay_to_handle(instance_dir, pr_url, pr_state.lower())
@@ -104,8 +105,8 @@ def drain_one(instance_dir: str) -> Optional[str]:
             missions_path,
             lambda c: remove_ci_item(c, pr_url),
         )
-        _write_outbox(
-            instance_dir,
+        _tell_chat(
+            instance_dir, pr_url,
             f"✅ CI passed for PR #{pr_number} — ready for review: {pr_url}",
         )
         _relay_to_handle(instance_dir, pr_url, "success")
@@ -130,8 +131,8 @@ def drain_one(instance_dir: str) -> Optional[str]:
                 missions_path,
                 lambda c: remove_ci_item(c, pr_url),
             )
-            _write_outbox(
-                instance_dir,
+            _tell_chat(
+                instance_dir, pr_url,
                 f"🚦 CI still failing after {max_attempts} attempts for PR #{pr_number}: {pr_url}",
             )
             _relay_to_handle(instance_dir, pr_url, "failure")
@@ -154,8 +155,8 @@ def drain_one(instance_dir: str) -> Optional[str]:
             missions_path,
             lambda c: remove_ci_item(c, pr_url),
         )
-        _write_outbox(
-            instance_dir,
+        _tell_chat(
+            instance_dir, pr_url,
             f"⏸ CI workflows on PR #{pr_number} are waiting for maintainer "
             f"approval — Kōan stopped retrying: {pr_url}",
         )
@@ -167,6 +168,23 @@ def drain_one(instance_dir: str) -> Optional[str]:
 
     # status == "pending" — leave in ## CI
     return None
+
+
+def _tell_chat(instance_dir: str, pr_url: str, message: str) -> None:
+    """Send a terminal CI outcome to chat, unless a /handle pipeline drives the PR.
+
+    The pipeline is woken by the relay and reports itself: a gate when CI is
+    stuck, the hand-off once the PR really is ready. An unreadable /handle
+    state sends the message rather than hide an outcome.
+    """
+    try:
+        from app.handle_state import drives_pr
+        if drives_pr(instance_dir, pr_url):
+            print(f"[ci_queue] not sent, /handle drives {pr_url}: {message}", file=sys.stderr)
+            return
+    except (OSError, RuntimeError, ValueError) as e:
+        print(f"[ci_queue] /handle state unreadable for {pr_url}: {e}", file=sys.stderr)
+    _write_outbox(instance_dir, message)
 
 
 def _relay_to_handle(instance_dir: str, pr_url: str, outcome: str) -> None:

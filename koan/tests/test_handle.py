@@ -157,7 +157,9 @@ def pipeline(tmp_path, monkeypatch):
 
             def run(self, url=ISSUE, after=""):
                 context = f"after:{after}" if after else ""
-                return handle_runner.run_handle(url, str(tmp_path), "proj", str(instance), context)
+                self.outcome = handle_runner.run_handle(
+                    url, str(tmp_path), "proj", str(instance), context)
+                return self.outcome.ok, self.outcome.summary
 
             def set_triage(self, output):
                 triage["output"] = output
@@ -1311,3 +1313,129 @@ class TestConfigValidation:
 
         warnings = validate_config({"handle": {"board": {"in-progress": "Doing"}}})
         assert any("handle.board.in-progress" in w[0] for w in warnings)
+
+
+# -- chat: what the agent loop is handed, and what it keeps quiet ---------------
+
+
+class TestChatOutcome:
+    def _seed_review(self, pipeline, **extra):
+        pipeline.seed(phase="reviewing", pr_url=PR, pr_number="12", branch="koan/implement-7",
+                      phase_started_at=time.time() - 60, **extra)
+
+    def test_queuing_a_step_is_progress_on_the_issue(self, pipeline):
+        pipeline.run()
+        outcome = pipeline.outcome
+        assert (outcome.milestone, outcome.url, outcome.note) == ("progress", ISSUE, "/plan queued")
+
+    def test_a_gate_names_what_blocks(self, pipeline):
+        self._seed_review(pipeline, review_round=3)
+        _write_sidecar(pipeline.instance_dir, False, time.time())
+        pipeline.run(after="review")
+        outcome = pipeline.outcome
+        assert (outcome.milestone, outcome.url) == ("gate", ISSUE)
+        assert outcome.note == f"Review still blocking after 3 fix rounds: {PR}"
+
+    def test_the_hand_off_names_the_pr_and_its_ci(self, pipeline):
+        self._seed_review(pipeline)
+        _write_sidecar(pipeline.instance_dir, True, time.time())
+        pipeline.run(after="review")
+        outcome = pipeline.outcome
+        assert (outcome.milestone, outcome.url, outcome.note) == ("handoff", PR, "CI green")
+
+    def test_a_poke_on_an_unanswered_gate_still_needs_a_human(self, pipeline):
+        pipeline.seed(phase="waiting_human", resume="plan", gated_at=time.time() + 60)
+        pipeline.run()
+        assert pipeline.outcome.milestone == "gate"
+
+    def test_a_poke_on_a_closed_issue_is_not_handled(self, pipeline):
+        pipeline.seed(phase="planning")
+        pipeline.github.issue["state"] = "closed"
+        pipeline.run()
+        outcome = pipeline.outcome
+        assert (outcome.milestone, outcome.url, outcome.note) == (
+            "stopped", ISSUE, "The issue is closed")
+
+    def test_handover_markers_carry_the_milestone(self):
+        from app.outcome_line import read_markers
+        found = read_markers(handle_runner._handover(
+            handle_runner.Outcome(True, "summary", "gate", ISSUE, "The plan has open questions")))
+        assert (found["milestone"], found["url"], found["detail"]) == (
+            "gate", ISSUE, "The plan has open questions")
+
+    def test_a_failed_tick_hands_over_its_reason(self):
+        from app.outcome_line import read_markers
+        found = read_markers(handle_runner._handover(handle_runner.Outcome(False, "boom")))
+        assert (found["reason"], found["milestone"]) == ("boom", "")
+
+
+class TestPipelineOwnership:
+    def test_the_queued_step_belongs_to_the_pipeline(self, pipeline):
+        pipeline.seed(phase="ci", pr_url=PR, pr_number="12", branch="koan/implement-7",
+                      phase_started_at=time.time())
+        pipeline.run(after="ci")
+        step = f"[project:proj] /review {PR} --force"
+        assert handle_state.owns_mission(pipeline.instance_dir, step)
+        assert not handle_state.owns_mission(pipeline.instance_dir, f"/review {PR}")
+
+    def test_a_step_on_issue_7_does_not_own_issue_70(self, tmp_path):
+        handle_state.update_record(str(tmp_path), ISSUE, phase="planning", step=f"/plan {ISSUE}")
+        assert handle_state.owns_mission(str(tmp_path), f"[project:proj] /plan {ISSUE} 📬")
+        assert not handle_state.owns_mission(str(tmp_path), f"[project:proj] /plan {ISSUE}0")
+
+    def test_a_step_left_over_from_an_earlier_phase_is_the_operators(self, tmp_path):
+        step = f"/rebase {PR} --fix"
+        handle_state.update_record(str(tmp_path), ISSUE, phase="waiting_human", pr_url=PR, step=step)
+        assert not handle_state.owns_mission(str(tmp_path), step)
+
+    @pytest.mark.parametrize("phase,owned", [
+        ("ci", True), ("fixing", True), ("waiting_human", False), ("done", False),
+    ])
+    def test_ci_fix_and_ci_outcome_follow_the_phase(self, tmp_path, phase, owned):
+        handle_state.update_record(str(tmp_path), ISSUE, phase=phase, pr_url=PR)
+        assert handle_state.owns_mission(str(tmp_path), f"/ci_check {PR}") is owned
+        assert handle_state.drives_pr(str(tmp_path), PR.replace("owner", "OWNER")) is owned
+
+    def test_untracked_pr_is_nobodys(self, tmp_path):
+        assert not handle_state.drives_pr(str(tmp_path), PR)
+        assert not handle_state.owns_mission(str(tmp_path), f"/ci_check {PR}")
+
+
+class TestCiQueueChat:
+    """`## CI` tells chat about a PR only when no pipeline drives it."""
+
+    def _drain(self, instance):
+        from app.ci_queue_runner import drain_one
+
+        (instance / "missions.md").write_text(
+            "# Missions\n\n## CI\n\n"
+            f"- [project:proj] {PR} branch:koan/implement-7 repo:owner/repo"
+            " queued:2026-04-01T10:00 (attempt 0/2)\n\n## Pending\n\n## Done\n"
+        )
+        with (
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.utils.modify_missions_file"),
+            patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
+            patch("app.ci_queue_runner.check_ci_status", return_value=("success", 1, "")),
+            patch("app.ci_queue_runner._write_outbox") as outbox,
+        ):
+            drain_one(str(instance))
+        return outbox
+
+    def test_green_ci_mid_pipeline_is_not_ready_for_review(self, tmp_path):
+        handle_state.update_record(str(tmp_path), ISSUE, project="proj", phase="ci", pr_url=PR)
+        self._drain(tmp_path).assert_not_called()
+        assert f"/handle {ISSUE} after:ci" in (tmp_path / "missions.md").read_text()
+
+    def test_green_ci_without_a_pipeline_is_announced(self, tmp_path):
+        outbox = self._drain(tmp_path)
+        assert "ready for review" in outbox.call_args[0][1]
+
+    def test_green_ci_on_a_gated_pipeline_is_announced(self, tmp_path):
+        handle_state.update_record(
+            str(tmp_path), ISSUE, project="proj", phase="waiting_human", pr_url=PR)
+        self._drain(tmp_path).assert_called_once()
+
+    def test_unreadable_pipeline_state_still_announces(self, tmp_path):
+        (tmp_path / handle_state.STATE_FILENAME).write_text("{broken")
+        self._drain(tmp_path).assert_called_once()
