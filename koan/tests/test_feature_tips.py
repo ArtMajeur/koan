@@ -304,6 +304,19 @@ def test_throttle_survives_restart(tmp_path):
     reset_tip_throttle()
 
 
+def test_tips_disabled_by_config(tmp_path):
+    reset_tip_throttle()
+    registry = FakeRegistry([_make_skill("status")])
+
+    with patch("app.skills.build_registry", return_value=registry), \
+         patch("app.config.get_feature_tips_enabled", return_value=False), \
+         patch("app.utils.append_to_outbox") as mock_outbox:
+        assert maybe_send_feature_tip(str(tmp_path)) is False
+        mock_outbox.assert_not_called()
+
+    reset_tip_throttle()
+
+
 def test_unreadable_tip_tracker_does_not_block_tips(tmp_path):
     reset_tip_throttle()
     (tmp_path / ".feature-tip-last-sent").write_text("not a timestamp")

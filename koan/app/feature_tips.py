@@ -184,6 +184,10 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
     if _idle_tip_sent:
         return False
 
+    from app.config import get_feature_tips_enabled
+    if not get_feature_tips_enabled():
+        return False
+
     if _last_tip_time is None:
         _last_tip_time = _load_last_tip_time(instance_dir)
     now = time.time()

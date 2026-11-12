@@ -75,6 +75,8 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "start_on_pause": "bool",
     "start_passive": "bool",
     "startup_reflection": "bool",
+    "morning_ritual": "bool",
+    "feature_tips": "bool",
     "auto_pause": "bool",
     "attention_github_notifications": "bool",
     "enable_multiple_instances": "bool",

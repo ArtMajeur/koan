@@ -1000,6 +1000,18 @@ def get_startup_reflection() -> bool:
     return bool(config.get("startup_reflection", False))
 
 
+def get_morning_ritual_enabled() -> bool:
+    """Whether the morning brief runs on the first start of the day (default: true)."""
+    config = _load_config()
+    return bool(config.get("morning_ritual", True))
+
+
+def get_feature_tips_enabled() -> bool:
+    """Whether idle-time 💡 "Did you know?" tips are sent (default: true)."""
+    config = _load_config()
+    return bool(config.get("feature_tips", True))
+
+
 def get_auto_pause() -> bool:
     """Check if auto-pause is enabled in config.yaml.
 
