@@ -9,6 +9,7 @@ Called from run.py's main_loop() during process initialization.
 
 import os
 import time
+from datetime import date
 from pathlib import Path
 
 from app.config import get_configured_messaging_level_explicit
@@ -513,8 +514,8 @@ def cleanup_mission_history(instance: str):
 
 
 def check_health(koan_root: str, max_age: int = 120):
-    """Check Telegram bridge health (heartbeat age)."""
-    log("health", "Checking Telegram bridge health...")
+    """Check messaging bridge health (heartbeat age)."""
+    log("health", "Checking messaging bridge health...")
     from app.health_check import check_and_alert
     check_and_alert(koan_root, max_age=max_age)
 
@@ -708,6 +709,73 @@ def run_morning_ritual(instance: str) -> bool:
     log("init", "Running morning ritual...")
     from app.rituals import run_ritual
     return run_ritual("morning", Path(instance))
+
+
+# Holds the date (ISO, local time) of the last successful morning ritual, so a
+# deploy or crash-restart later the same day doesn't re-run the brief.
+MORNING_RITUAL_TRACKER = ".morning-ritual-last-run"
+
+
+def _morning_ritual_ran_today(instance: str) -> bool:
+    try:
+        last_run = (Path(instance) / MORNING_RITUAL_TRACKER).read_text().strip()
+    except (OSError, ValueError):
+        # Missing or undecodable marker: run the ritual rather than fail startup.
+        return False
+    return last_run == date.today().isoformat()
+
+
+def _record_morning_ritual(instance: str) -> None:
+    from app.utils import atomic_write
+    try:
+        atomic_write(Path(instance) / MORNING_RITUAL_TRACKER, date.today().isoformat())
+    except OSError as e:
+        log("error", f"Could not record morning ritual date: {e}")
+
+
+def _run_morning_ritual_phase(instance: str) -> None:
+    """Run the morning ritual at most once per day, with its status pings.
+
+    The 🌅 start/complete lines are progress pings (INFO), so
+    ``notifications.min_priority: action`` keeps them out of chat. The ⚠️ failed
+    and ⏭️ skipped lines stay at the default priority: both mean no brief was
+    produced (run_ritual reports a CLI error or timeout by returning False, not
+    by raising), and that the operator needs to see.
+    """
+    from app.notify import NotificationPriority
+    from app.notify_dedup import NOTICE_DEDUP_WINDOW_SECONDS
+    from app.run import _notify_raw, protected_phase
+
+    if _morning_ritual_ran_today(instance):
+        log("init", "Morning ritual already ran today — skipping.")
+        return
+
+    # Dedup across incarnations (#2426) still applies on top of the daily gate,
+    # for restart loops before the first ritual of the day completes.
+    def ping(message: str) -> None:
+        _notify_raw(instance, message, dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
+                    priority=NotificationPriority.INFO)
+
+    def alert(message: str) -> None:
+        _notify_raw(instance, message, dedup_window=NOTICE_DEDUP_WINDOW_SECONDS)
+
+    ping("🌅 Running morning ritual (Claude CLI, up to ~90s)...")
+    ritual_error = ""
+    with protected_phase("Morning ritual"):
+        try:
+            ritual_ok = run_morning_ritual(instance)
+        except Exception as e:
+            log("error", f"Morning ritual failed: {e}")
+            ritual_ok = None
+            ritual_error = str(e)
+    if ritual_ok:
+        _record_morning_ritual(instance)
+        ping("🌅 Morning ritual complete — preparing first iteration.")
+    elif ritual_ok is None:
+        reason = f" ({ritual_error})" if ritual_error else ""
+        _notify_raw(instance, f"⚠️ Morning ritual failed{reason} — preparing first iteration anyway.")
+    else:
+        alert("⏭️ Morning ritual skipped — preparing first iteration.")
 
 
 # ---------------------------------------------------------------------------
@@ -925,39 +993,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # Daily report
     _safe_run("Daily report", run_daily_report)
 
-    # Startup-status pings use _notify_raw so the 🌅/⚠️ markers and exact
-    # wording reach Telegram intact (no Claude CLI rewrite). These are
-    # idempotent lifecycle notices — dedup across incarnations (#2426) so a
-    # restart loop doesn't re-announce the ritual on every startup.
-    from app.notify_dedup import NOTICE_DEDUP_WINDOW_SECONDS
-    _notify_raw(
-        instance,
-        "🌅 Running morning ritual (Claude CLI, up to ~90s)...",
-        dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
-    )
-    ritual_error = ""
-    with protected_phase("Morning ritual"):
-        try:
-            ritual_ok = run_morning_ritual(instance)
-        except Exception as e:
-            log("error", f"Morning ritual failed: {e}")
-            ritual_ok = None
-            ritual_error = str(e)
-    if ritual_ok:
-        _notify_raw(
-            instance,
-            "🌅 Morning ritual complete — preparing first iteration.",
-            dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
-        )
-    elif ritual_ok is None:
-        reason = f" ({ritual_error})" if ritual_error else ""
-        _notify_raw(instance, f"⚠️ Morning ritual failed{reason} — preparing first iteration anyway.")
-    else:
-        _notify_raw(
-            instance,
-            "⏭️ Morning ritual skipped — preparing first iteration.",
-            dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
-        )
+    _run_morning_ritual_phase(instance)
 
     # Initialize hook system and fire session_start
     from app.hooks import fire_hook, init_hooks

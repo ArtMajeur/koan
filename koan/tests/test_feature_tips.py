@@ -240,7 +240,7 @@ def test_maybe_send_after_interval(tmp_path):
     with patch("app.skills.build_registry", return_value=registry), \
          patch("app.utils.append_to_outbox") as mock_outbox, \
          patch("app.feature_tips.time") as mock_time:
-        mock_time.monotonic.side_effect = [0.0, 0.0 + _TIP_INTERVAL + 1]
+        mock_time.time.side_effect = [1000.0, 1000.0 + _TIP_INTERVAL + 1]
         assert maybe_send_feature_tip(str(tmp_path)) is True
         # Productive work resets the idle guard
         mark_active()
@@ -259,7 +259,7 @@ def test_idle_tip_guard_blocks_second_tip(tmp_path):
     with patch("app.skills.build_registry", return_value=registry), \
          patch("app.utils.append_to_outbox") as mock_outbox, \
          patch("app.feature_tips.time") as mock_time:
-        mock_time.monotonic.side_effect = [0.0, 0.0 + _TIP_INTERVAL + 1]
+        mock_time.time.side_effect = [1000.0, 1000.0 + _TIP_INTERVAL + 1]
         assert maybe_send_feature_tip(str(tmp_path)) is True
         # Without mark_active(), second tip is blocked
         assert maybe_send_feature_tip(str(tmp_path)) is False
@@ -277,11 +277,41 @@ def test_mark_active_resets_idle_guard(tmp_path):
     with patch("app.skills.build_registry", return_value=registry), \
          patch("app.utils.append_to_outbox") as mock_outbox, \
          patch("app.feature_tips.time") as mock_time:
-        mock_time.monotonic.side_effect = [0.0, 0.0 + _TIP_INTERVAL + 1]
+        mock_time.time.side_effect = [1000.0, 1000.0 + _TIP_INTERVAL + 1]
         assert maybe_send_feature_tip(str(tmp_path)) is True
         mark_active()
         assert maybe_send_feature_tip(str(tmp_path)) is True
         assert mock_outbox.call_count == 2
+
+    reset_tip_throttle()
+
+
+def test_throttle_survives_restart(tmp_path):
+    """A deploy restarts the process; the next idle period must not tip again
+    inside the 6 h window. reset_tip_throttle() stands in for the fresh
+    process (in-memory state gone, instance dir kept)."""
+    reset_tip_throttle()
+    skills = [_make_skill("status"), _make_skill("plan")]
+    registry = FakeRegistry(skills)
+
+    with patch("app.skills.build_registry", return_value=registry), \
+         patch("app.utils.append_to_outbox") as mock_outbox:
+        assert maybe_send_feature_tip(str(tmp_path)) is True
+        reset_tip_throttle()
+        assert maybe_send_feature_tip(str(tmp_path)) is False
+        assert mock_outbox.call_count == 1
+
+    reset_tip_throttle()
+
+
+def test_unreadable_tip_tracker_does_not_block_tips(tmp_path):
+    reset_tip_throttle()
+    (tmp_path / ".feature-tip-last-sent").write_text("not a timestamp")
+    registry = FakeRegistry([_make_skill("status")])
+
+    with patch("app.skills.build_registry", return_value=registry), \
+         patch("app.utils.append_to_outbox"):
+        assert maybe_send_feature_tip(str(tmp_path)) is True
 
     reset_tip_throttle()
 

@@ -9,10 +9,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 TELEGRAM_KEYS = ("KOAN_TELEGRAM_TOKEN", "KOAN_TELEGRAM_CHAT_ID")
+SLACK_KEYS = ("KOAN_SLACK_BOT_TOKEN", "KOAN_SLACK_APP_TOKEN", "KOAN_SLACK_CHANNEL_ID")
 AUTH_KEYS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 PROVISION_KEYS = (
     "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GH_TOKEN",
-    "KOAN_TELEGRAM_TOKEN", "KOAN_TELEGRAM_CHAT_ID",
+    *TELEGRAM_KEYS, *SLACK_KEYS,
 )
 
 
@@ -76,8 +77,12 @@ def required_env_present() -> bool:
     """True when env vars alone can provision a complete instance."""
     has_auth = any(os.environ.get(k, "").strip() for k in AUTH_KEYS)
     has_gh = bool(resolve_gh_token())
-    has_tg = all(os.environ.get(k, "").strip() for k in TELEGRAM_KEYS)
-    return has_auth and has_gh and has_tg
+    # A Slack-only deploy has no Telegram credentials: either set is enough.
+    has_messaging = any(
+        all(os.environ.get(k, "").strip() for k in keys)
+        for keys in (TELEGRAM_KEYS, SLACK_KEYS)
+    )
+    return has_auth and has_gh and has_messaging
 
 
 def env_configured() -> bool:
