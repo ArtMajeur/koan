@@ -69,7 +69,9 @@ def fetch_comments(owner: str, repo: str, number: str) -> List[dict]:
 
 
 def fetch_review_activity(owner: str, repo: str, number: str) -> List[dict]:
-    """A PR's inline review comments and submitted reviews: ``{author, is_bot, created_at}``.
+    """A PR's inline review comments and submitted reviews.
+
+    Each is ``{author, is_bot, body, created_at}`` (epoch).
 
     They live outside the comment thread ``fetch_comments`` reads.
     """
@@ -78,7 +80,7 @@ def fetch_review_activity(owner: str, repo: str, number: str) -> List[dict]:
         raw = run_gh(
             "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/{path}",
             "--jq", f".[] | select(.{stamp} != null) | {{author: .user.login,"
-                    f' is_bot: (.user.type == "Bot"), created_at: .{stamp}}}',
+                    f' is_bot: (.user.type == "Bot"), body, created_at: .{stamp}}}',
         )
         activity += [json.loads(line) for line in raw.splitlines() if line.strip()]
     for item in activity:

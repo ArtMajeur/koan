@@ -324,6 +324,14 @@ class TestRelayCiOutcome:
         assert handle_state.relay_ci_outcome(str(tmp_path), PR, "success") is False
         assert "/handle" not in (tmp_path / "missions.md").read_text()
 
+    def test_issue_pipeline_owns_a_pr_also_handled_on_its_own(self, tmp_path):
+        (tmp_path / "missions.md").write_text(EMPTY_MISSIONS)
+        handle_state.update_record(str(tmp_path), PR, project="proj", phase="done", pr_url=PR)
+        handle_state.update_record(str(tmp_path), ISSUE, project="proj", phase="ci", pr_url=PR)
+        assert handle_state.find_issue_for_pr(str(tmp_path), PR) == ISSUE
+        assert handle_state.relay_ci_outcome(str(tmp_path), PR, "success")
+        assert f"/handle {ISSUE} after:ci" in (tmp_path / "missions.md").read_text()
+
     def test_drain_one_relays_success(self):
         from app.ci_queue_runner import drain_one
 
@@ -1029,6 +1037,11 @@ class TestAutoreviewGuard:
             handle_state.update_record(str(tmp_path), ISSUE, phase=phase)
         assert handle_state.tracks_mission(str(tmp_path), f"/implement {ISSUE}") is False
 
+    def test_a_standalone_pr_pipeline_blocks_autoreview(self, tmp_path):
+        handle_state.update_record(str(tmp_path), PR, phase="qa_running", pr_url=PR)
+        qa_mission = f"/qa https://preview.example Verify the fix for {PR} on this preview of {PR}; report"
+        assert handle_state.tracks_mission(str(tmp_path), qa_mission) is True
+
 
 class TestClosedIssue:
     def _close(self, pipeline):
@@ -1123,6 +1136,15 @@ class TestEntryPoints:
         pipeline.run(url=PR, after="ci")
         assert pipeline.record()["phase"] == "reviewing"
 
+    def test_pr_addressed_as_an_issue_resolves_to_its_issue(self, pipeline):
+        pipeline.seed(phase="ci", ci_outcome="success", pr_url=PR, pr_number="12", branch="b")
+        issue = dict(pipeline.github.issue)
+        pull = dict(issue, html_url=PR, is_pr=True)
+        with patch.object(handle_runner.gh, "fetch_issue",
+                          side_effect=lambda owner, repo, number: dict(pull if number == "12" else issue)):
+            pipeline.run(url=PR.replace("/pull/", "/issues/"), after="ci")
+        assert pipeline.record()["phase"] == "reviewing"
+        assert handle_state.load_record(pipeline.instance_dir, PR) == {}
 
 
 class TestPullRequestPipeline:
@@ -1154,9 +1176,23 @@ class TestPullRequestPipeline:
         _write_sidecar(pipeline.instance_dir, True, time.time() + 1)
         pipeline.run(url=PR, after="review")
         assert self._record(pipeline)["phase"] == "done"
-        assert pipeline.github.handed_off == [("12", "dev")]
+        # GitHub refuses a review request to the PR's own author.
+        assert pipeline.github.handed_off == [("12", "")]
         assert "is ready for review" in pipeline.github.posted[-1]
         assert pipeline.github.board_moves == []
+
+    def test_hand_off_asks_a_requester_other_than_the_author_to_review(self, pipeline):
+        pipeline.github.pr_comments = [{"author": "lead", "body": f"@{BOT} handle", "created_at": 1.0}]
+        pipeline.run(url=PR)
+        _write_sidecar(pipeline.instance_dir, True, time.time() + 1)
+        pipeline.run(url=PR, after="review")
+        assert pipeline.github.handed_off == [("12", "lead")]
+
+    def test_handle_in_an_inline_review_comment_names_the_requester(self, pipeline):
+        pipeline.github.pr_comments = []
+        pipeline.github.pr_reviews = [{"author": "lead", "body": f"@{BOT} handle", "created_at": 1.0}]
+        pipeline.run(url=PR)
+        assert self._record(pipeline)["requester"] == "lead"
 
     def test_blocking_review_queues_a_fix_round(self, pipeline):
         pipeline.run(url=PR)
@@ -1177,7 +1213,28 @@ class TestPullRequestPipeline:
         pipeline.github.pr_state = "CLOSED"
         pipeline.run(url=PR)
         assert pipeline.pending() == []
+        assert "pull request is closed" in pipeline.github.posted[0]
         assert "Reopen" in pipeline.github.posted[0]
+
+    def test_merged_pr_is_answered_as_merged(self, pipeline):
+        pipeline.github.issue["state"] = "closed"
+        pipeline.github.pr_state = "MERGED"
+        pipeline.run(url=PR)
+        assert pipeline.pending() == []
+        assert "is merged" in pipeline.github.posted[0]
+
+    def test_reply_on_the_pr_resumes_its_gate(self, pipeline):
+        handle_state.update_record(
+            pipeline.instance_dir, PR, project="proj", phase="ci", requester="dev", pr_url=PR,
+            pr_number="12", branch="b", ci_polls=0, ci_empty_checks=0, ci_outcome="failure")
+        pipeline.github.ci_state = "failure"
+        pipeline.run(url=PR, after="ci")
+        assert self._record(pipeline)["phase"] == "waiting_human"
+        pipeline.github.ci_state = "success"
+        pipeline.github.pr_comments.append(
+            {"author": "dev", "body": f"Fixed the flaky test. @{BOT} handle", "created_at": time.time() + 5})
+        pipeline.run(url=PR)
+        assert self._record(pipeline)["phase"] == "reviewing"
 
     def test_poke_on_a_handed_off_pr_starts_a_new_round(self, pipeline):
         handle_state.update_record(pipeline.instance_dir, PR, project="proj", phase="done",

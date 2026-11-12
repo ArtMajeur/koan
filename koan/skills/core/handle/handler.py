@@ -1,4 +1,4 @@
-"""Kōan handle skill -- queue the /handle pipeline tick for a GitHub issue."""
+"""Kōan handle skill -- queue the /handle pipeline tick for a GitHub issue or PR."""
 
 from app.github_skill_helpers import handle_github_skill
 from app.github_url_parser import parse_github_url

@@ -60,19 +60,26 @@ after an error, a lost event file) it re-evaluates the phase.
 there is no issue to triage, plan or implement, so the PR itself is the subject. Its
 record is keyed by the PR's canonical URL, holds the PR as its `pr_url`, and enters `ci`
 directly; from there the phases above apply unchanged (CI → review/fix loop → optional QA
-→ hand-off). The requester rule is the same, with the PR author as the fallback.
+→ hand-off). The requester rule is the same, with the PR author as the fallback; an
+`@<bot> handle` written as an inline review comment or in a review counts like one in
+the PR's comment thread.
 
 - **Where it differs:** the bot does not assign itself and makes no board moves (the
-  board tracks issues, and a PR may not be on it); comments go to the PR thread.
-- **Entry checks:** to the API a PR is an issue, so a closed or merged PR falls under the
-  closed-issue rule: it does not start, and reopening it then poking resumes. A PR whose
+  board tracks issues, and a PR may not be on it); comments go to the PR thread. The
+  hand-off requests no review when the requester is the PR's own author (GitHub refuses
+  that request); the author is still pinged.
+- **Entry checks:** to the API a PR is an issue, so a closed PR falls under the
+  closed-issue rule: it does not start, and reopening it then poking resumes. A merged
+  PR is answered as merged. A PR whose
   head lives in a fork is refused with a comment and nothing queued: `/rebase --fix`
   pushes to the head branch and the CI read looks up runs by branch name in the base
   repository, neither of which reaches a fork.
 - **Re-entry:** a poke on a finished PR pipeline starts a new fix round while the PR is
   open; a closed PR is never restarted from triage (there is no issue to restart from).
-- A PR that a tracked issue's pipeline opened keeps resolving to that issue: the
-  issue's pipeline owns it.
+- A PR that a tracked issue's pipeline opened keeps resolving to that issue, whether it
+  is addressed as `/pull/<n>` or `/issues/<n>`: the issue's pipeline owns it. That holds
+  when a PR pipeline also has a record for the same PR (the PR was handled on its own
+  before its issue was): the issue's record wins for pokes and CI relays.
 
 ### CI decision (phase `ci`)
 
@@ -242,8 +249,9 @@ resumes once someone has replied in either thread.
   the gate. Only `@<bot> handle` moves such an issue. Best-effort like the autoreview guard:
   an unreadable state file is logged and the fallback proceeds.
 - **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`.
-- **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue an
-  active `/handle` pipeline tracks (`handle_state.tracks_mission`): a second review/fix
+- **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue
+  (or pull request, for a pull-request pipeline) an active `/handle` pipeline is keyed by
+  (`handle_state.tracks_mission`): a second review/fix
   loop would push new heads under the pipeline and race its `/review` steps.
 - **Plan:** `plan_runner.extract_open_questions()` — the same section boundaries the
   assumptions audit writes into.

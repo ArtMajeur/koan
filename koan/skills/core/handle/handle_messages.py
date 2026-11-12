@@ -66,6 +66,10 @@ _TEMPLATES = {
             "This issue is closed — I stop handling it. Reopen it and comment "
             "`@{bot} handle` to pick it up again."
         ),
+        "pr_closed": (
+            "This pull request is closed — I stop handling it. Reopen it and comment "
+            "`@{bot} handle` to pick it up again."
+        ),
         "busy": "Already on it — current step: {phase}.",
         "gate_open": (
             "{mention}I'm still waiting for a reply to the question above. Answer in this "
@@ -144,6 +148,10 @@ _TEMPLATES = {
         "issue_closed": (
             "Cette issue est fermée — j'arrête de la traiter. Rouvrez-la et commentez "
             "`@{bot} handle` pour reprendre."
+        ),
+        "pr_closed": (
+            "Cette pull request est fermée — j'arrête de la traiter. Rouvrez-la et "
+            "commentez `@{bot} handle` pour reprendre."
         ),
         "busy": "Déjà en cours — étape actuelle : {phase}.",
         "gate_open": (
