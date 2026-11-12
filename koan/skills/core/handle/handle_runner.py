@@ -149,8 +149,8 @@ def run_handle(
             issue_url = pr_url
         tick = _load_tick(issue_url, project_path, project_name, instance_dir, bot, context)
         ok, summary = _dispatch(tick)
-        url = tick.pr_url if tick.milestone == "handoff" else tick.issue_url
-        return Outcome(ok, summary, tick.milestone, url, tick.note)
+        subject = tick.pr_url if tick.milestone == "handoff" else tick.issue_url
+        return Outcome(ok, summary, tick.milestone, subject, tick.note)
     # Runner boundary: any failure is reported on the issue, never swallowed.
     except Exception as e:
         target = (tick.owner, tick.repo, tick.number) if tick else (owner, repo, number)
@@ -699,10 +699,13 @@ def _queue(tick: Tick, command: str, after: str, phase: str) -> Result:
 
 
 def _gate(tick: Tick, key: str, resume: str, **values) -> Result:
+    # Built first: a gate key without a chat note must fail before the comment
+    # and the phase change, not leave a gate that then reports as an error.
+    note = _GATE_NOTES[key].format(**values)
     gated_at = time.time()
     tick.comment(key, **values)
     tick.save(phase="waiting_human", resume=resume, gated_at=gated_at)
-    tick.milestone, tick.note = "gate", _GATE_NOTES[key].format(**values)
+    tick.milestone, tick.note = "gate", note
     return True, f"Waiting for a human ({key}) on {tick.issue_url}"
 
 

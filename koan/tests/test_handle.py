@@ -1370,6 +1370,11 @@ class TestPipelineOwnership:
         assert handle_state.owns_mission(pipeline.instance_dir, step)
         assert not handle_state.owns_mission(pipeline.instance_dir, f"/review {PR}")
 
+    def test_a_step_on_issue_7_does_not_own_issue_70(self, tmp_path):
+        handle_state.update_record(str(tmp_path), ISSUE, phase="planning", step=f"/plan {ISSUE}")
+        assert handle_state.owns_mission(str(tmp_path), f"[project:proj] /plan {ISSUE} 📬")
+        assert not handle_state.owns_mission(str(tmp_path), f"[project:proj] /plan {ISSUE}0")
+
     def test_a_step_left_over_from_an_earlier_phase_is_the_operators(self, tmp_path):
         step = f"/rebase {PR} --fix"
         handle_state.update_record(str(tmp_path), ISSUE, phase="waiting_human", pr_url=PR, step=step)

@@ -172,11 +172,17 @@ def drives_pr(instance_dir: str, pr_url: str) -> bool:
     return bool(found and _drives(found[1]))
 
 
+def _names_command(title: str, command: str) -> bool:
+    """True when *title* carries *command* whole: issue #7's step is not issue #70's."""
+    return re.search(rf"(?<!\S){re.escape(command)}(?!\S)", title) is not None
+
+
 def owns_mission(instance_dir: str, mission_title: str) -> bool:
     """True when a pipeline queued *mission_title* for itself.
 
     That is the step its current phase waits for, or a ``/ci_check`` on the PR
-    it drives. An operator's own ``/review`` or ``/implement`` never matches.
+    it drives. An operator's ``/review`` or ``/implement`` matches only when it
+    is that very command.
     """
     title = mission_title or ""
     if not _state_path(instance_dir).exists():
@@ -184,7 +190,7 @@ def owns_mission(instance_dir: str, mission_title: str) -> bool:
     data = _read_all(instance_dir)
     for record in data.values():
         step = isinstance(record, dict) and record.get("step")
-        if step and record.get("phase") in STEP_PHASES and step in title:
+        if step and record.get("phase") in STEP_PHASES and _names_command(title, step):
             return True
     if "/ci_check " not in title:
         return False
