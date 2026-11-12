@@ -20,7 +20,12 @@ from app.utils import atomic_write
 
 _TIP_INTERVAL = 6 * 60 * 60
 
-_last_tip_time: float = 0.0
+# Wall-clock time of the last tip, persisted so the throttle survives the
+# restart that every deploy causes (an in-memory-only timer reset to "never",
+# so each deploy was followed by a tip).
+_TIP_TRACKER = ".feature-tip-last-sent"
+
+_last_tip_time: Optional[float] = None
 
 # When True, no new tips are sent (one tip already delivered this idle period).
 _idle_tip_sent: bool = False
@@ -179,8 +184,10 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
     if _idle_tip_sent:
         return False
 
-    now = time.monotonic()
-    if _last_tip_time > 0 and (now - _last_tip_time) < _TIP_INTERVAL:
+    if _last_tip_time is None:
+        _last_tip_time = _load_last_tip_time(instance_dir)
+    now = time.time()
+    if _last_tip_time is not None and (now - _last_tip_time) < _TIP_INTERVAL:
         return False
 
     # One-time feature notices take priority over rotating skill tips.
@@ -202,8 +209,24 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
         record_notice_shown(instance_dir, notice[0])
 
     _last_tip_time = now
+    _save_last_tip_time(instance_dir, now)
     _idle_tip_sent = True
     return True
+
+
+def _load_last_tip_time(instance_dir: str) -> Optional[float]:
+    try:
+        return float((Path(instance_dir) / _TIP_TRACKER).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _save_last_tip_time(instance_dir: str, sent_at: float) -> None:
+    try:
+        atomic_write(Path(instance_dir) / _TIP_TRACKER, str(sent_at))
+    except OSError as e:
+        # Losing the timestamp only means the next restart may tip early.
+        print(f"[feature_tips] Could not record tip time: {e}")
 
 
 def mark_active() -> None:
@@ -215,5 +238,5 @@ def mark_active() -> None:
 def reset_tip_throttle() -> None:
     """Reset the throttle timer. Useful for testing."""
     global _last_tip_time, _idle_tip_sent
-    _last_tip_time = 0.0
+    _last_tip_time = None
     _idle_tip_sent = False

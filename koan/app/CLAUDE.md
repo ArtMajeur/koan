@@ -154,6 +154,8 @@ Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `
 - `outbox.md` — Bot → Telegram message queue (written atomically by `append_to_outbox()`)
 - `outbox-sending.md` — Crash-safety staging file for outbox flush; `OutboxManager.recover_staged()` re-sends on restart
 - `.notify-dedup.json` — Persistent `{hash: last_sent_ts}` map for cross-restart dedup of idempotent lifecycle notices (`notify_dedup.py`, #2426); prunes entries older than the dedup window
+- `.morning-ritual-last-run` — Date (ISO) of the last successful morning ritual; `startup_manager` skips the ritual on later starts the same day
+- `.feature-tip-last-sent` — Wall-clock time of the last 💡 feature tip (`feature_tips.py`), so the 6 h throttle survives restarts
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
 - `soul.md` — Agent personality definition
 - `memory/` — Global summary + per-project learnings/context + `memory.db` (SQLite FTS5 index)

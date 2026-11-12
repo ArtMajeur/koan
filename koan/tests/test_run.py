@@ -3756,6 +3756,12 @@ class TestRunIterationFirstIterationNotifications:
         assert "Scanning GitHub notifications" in joined
         assert "Notifications clear" in joined
 
+        # No event in either banner: INFO, so min_priority=action keeps them
+        # out of chat on every deploy.
+        from app.notify import NotificationPriority
+        for c in mock_notify_raw.call_args_list:
+            assert c.kwargs.get("priority") == NotificationPriority.INFO
+
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.github_config.get_github_commands_enabled", return_value=True)
     @patch("app.run.plan_iteration")
@@ -3965,6 +3971,13 @@ class TestNotifyRaw:
         from app.run import _notify_raw
         _notify_raw("/tmp/instance", "🔍 verbatim test")
         mock_send.assert_called_once_with("🔍 verbatim test", dedup_window=0.0)
+
+    @patch("app.notify.send_telegram")
+    def test_forwards_priority(self, mock_send):
+        from app.notify import NotificationPriority
+        from app.run import _notify_raw
+        _notify_raw("/tmp/instance", "ping", priority=NotificationPriority.INFO)
+        mock_send.assert_called_once_with("ping", priority=NotificationPriority.INFO, dedup_window=0.0)
 
     @patch("app.run.log")
     @patch("app.notify.send_telegram", side_effect=RuntimeError("boom"))

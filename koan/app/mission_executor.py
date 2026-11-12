@@ -807,10 +807,17 @@ def _run_iteration(
 
     # Check GitHub notifications before planning (converts @mentions to missions
     # so plan_iteration() sees them immediately instead of waiting for sleep)
+    # Cold-start banners that carry no event are progress pings: INFO, so a
+    # min_priority of action keeps them out of chat after every deploy.
+    from app.notify import NotificationPriority
     gh_missions = 0
     if github_enabled:
         if is_first_iteration:
-            _run._notify_raw(instance, "🔍 Scanning GitHub notifications (cold start, may take ~1 min)...")
+            _run._notify_raw(
+                instance,
+                "🔍 Scanning GitHub notifications (cold start, may take ~1 min)...",
+                priority=NotificationPriority.INFO,
+            )
         from app.loop_manager import (
             process_github_notifications,
             was_github_notification_check_throttled,
@@ -837,11 +844,19 @@ def _run_iteration(
             if github_enabled and gh_missions > 0:
                 _run._notify_raw(instance, f"📋 GitHub: {gh_missions} new mission(s) queued. Scanning Jira{cold}...")
             elif is_boot_iteration and github_enabled:
-                _run._notify_raw(instance, f"📋 GitHub: scanned, no new missions. Scanning Jira{cold}...")
+                _run._notify_raw(
+                    instance,
+                    f"📋 GitHub: scanned, no new missions. Scanning Jira{cold}...",
+                    priority=NotificationPriority.INFO,
+                )
             else:
                 # Boot without GitHub, or resume from pause: emit a single
                 # cold-start banner so the human sees Jira IS being scanned.
-                _run._notify_raw(instance, f"🔍 Scanning Jira notifications{cold}...")
+                _run._notify_raw(
+                    instance,
+                    f"🔍 Scanning Jira notifications{cold}...",
+                    priority=NotificationPriority.INFO,
+                )
         from app.loop_manager import (
             process_jira_notifications,
             was_jira_notification_check_throttled,
@@ -863,7 +878,11 @@ def _run_iteration(
         elif is_boot_iteration:
             # Empty-state message: only at actual boot. Suppress on resume to
             # avoid spamming the human after every /pause+/resume or auto-resume.
-            _run._notify_raw(instance, "🎯 Notifications clear. Picking first mission from queue...")
+            _run._notify_raw(
+                instance,
+                "🎯 Notifications clear. Picking first mission from queue...",
+                priority=NotificationPriority.INFO,
+            )
 
     # Startup update hint: surface upstream commits to the user (48 h throttled)
     if is_boot_iteration:

@@ -934,7 +934,8 @@ def _notify(instance: str, message: str, *, verbatim: bool = False):
         log("error", f"Notification failed: {e}")
 
 
-def _notify_raw(instance: str, message: str, dedup_window: float = 0.0):
+def _notify_raw(instance: str, message: str, dedup_window: float = 0.0,
+                priority=None):
     """Send a notification straight to Telegram, skipping the Claude-CLI
     personality reformatter (notify.format_and_send → format_outbox.
     format_message). Use this for terse status updates (startup progress,
@@ -944,10 +945,17 @@ def _notify_raw(instance: str, message: str, dedup_window: float = 0.0):
 
     Pass dedup_window > 0 for idempotent lifecycle notices (#2426) so a restart
     loop doesn't re-announce them on every incarnation.
+
+    Pass priority=NotificationPriority.INFO for pure progress pings, so the
+    operator's ``notifications.min_priority`` can route them to the journal
+    instead of chat. Omitted, send_telegram's default (ACTION) applies.
     """
     try:
         from app.notify import send_telegram
-        send_telegram(message, dedup_window=dedup_window)
+        if priority is None:
+            send_telegram(message, dedup_window=dedup_window)
+        else:
+            send_telegram(message, priority=priority, dedup_window=dedup_window)
     except Exception as e:
         log("error", f"Raw notification failed: {e}")
 
