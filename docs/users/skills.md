@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for Koan slash commands across messaging, GitHub mentions, and the curated REST/MCP skill catalog."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-11
+updated: 2026-11-12
 ---
 
 # Skills Reference
@@ -52,7 +52,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. Loads project MCP servers when `plan` is in `mcp_roles` (default). | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; reassembles the newest verified multipart Jira plan when needed, then creates a draft PR and privately reviews/fixes Important+ findings by default | Yes |
-| `/handle <issue>` | — | Carry an issue end to end: triage → `/plan` → `/implement` → CI → `/review` + `/rebase --fix` loop (up to 3 fix rounds) → optional QA on the PR preview → hand-off to the requester. Stops and pings the requester at each human gate; `@bot handle` resumes. See `specs/skills/handle.md` | Yes |
+| `/handle <issue\|pr>` | — | Carry an issue end to end: triage → `/plan` → `/implement` → CI → `/review` + `/rebase --fix` loop (up to 3 fix rounds) → optional QA on the PR preview → hand-off to the requester. On a PR no issue pipeline tracks, starts at CI. Stops and pings the requester at each human gate; `@bot handle` resumes. See `specs/skills/handle.md` | Yes |
 | `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. On a PR, including GitHub `@bot fix`, this is queued explicitly as `/rebase --fix`; bare `@bot rebase` remains a simple rebase. Trailing context is passed to the feedback prompt. | Yes |
 | `/debug <issue>` | `/dbg` | Structured 4-step debug loop: reproduce → hypothesize → minimal fix → verify. Auto-queued when `/fix` fails (opt-in via `debug_escalation.on_fix_failure` in config.yaml) | Yes |
 | `/review <PR> [PR ...] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | Review one or more pull requests; each URL queues a separate review mission. Reviews are read-only and run against a fresh checkout of the PR head: the tool set is a positive allowlist, every shell command is gated by a hook (read-only inspection only, one command per call), and a provider that cannot enforce that is refused rather than run unrestricted. `--bot-comments` triages bot findings | Yes |

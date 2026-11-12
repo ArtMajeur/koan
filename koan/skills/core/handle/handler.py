@@ -9,6 +9,7 @@ def handle(ctx):
 
     Usage:
         /handle https://github.com/owner/repo/issues/42
+        /handle https://github.com/owner/repo/pull/43
     """
     return handle_github_skill(
         ctx,

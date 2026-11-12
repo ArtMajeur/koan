@@ -195,10 +195,13 @@ def find_open_pr(owner: str, repo: str, branch: str, bot: str) -> Optional[dict]
 
 
 def pr_info(owner: str, repo: str, number: str) -> dict:
-    """``{state, headRefOid, isDraft, url}`` of a PR (state: OPEN/CLOSED/MERGED)."""
+    """``{state, headRefOid, headRefName, isCrossRepository, isDraft, url}`` of a PR.
+
+    state is OPEN, CLOSED or MERGED.
+    """
     data = _json(run_gh(
         "pr", "view", number, "--repo", f"{owner}/{repo}",
-        "--json", "state,headRefOid,isDraft,url",
+        "--json", "state,headRefOid,headRefName,isCrossRepository,isDraft,url",
     ))
     if not data:
         raise RuntimeError(f"empty response for PR {owner}/{repo}#{number}")

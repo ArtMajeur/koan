@@ -75,7 +75,10 @@ _TEMPLATES = {
             "{mention}I hit an error at step `{phase}`: {error}\n\n"
             "Comment `@{bot} handle` to retry that step."
         ),
-        "not_tracked": "No pipeline found for this pull request; run `@{bot} handle` on its issue.",
+        "fork_pr": (
+            "{mention}This pull request comes from a fork: I can't push fixes to its "
+            "branch, so I won't handle it."
+        ),
         "state_closed": "closed",
         "state_merged": "merged",
     },
@@ -151,8 +154,9 @@ _TEMPLATES = {
             "{mention}J'ai rencontré une erreur à l'étape `{phase}` : {error}\n\n"
             "Commentez `@{bot} handle` pour relancer cette étape."
         ),
-        "not_tracked": (
-            "Aucun suivi pour cette pull request ; lancez `@{bot} handle` sur son issue."
+        "fork_pr": (
+            "{mention}Cette pull request vient d'un fork : je ne peux pas pousser de "
+            "correctifs sur sa branche, donc je ne la traite pas."
         ),
         "state_closed": "fermée",
         "state_merged": "fusionnée",

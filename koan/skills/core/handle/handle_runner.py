@@ -61,6 +61,11 @@ class Tick:
         return bool(self.after)
 
     @property
+    def is_pr(self) -> bool:
+        """The pipeline drives a PR no issue pipeline tracks (see _adopt_pr)."""
+        return bool(self.issue.get("is_pr"))
+
+    @property
     def full_repo(self) -> str:
         return f"{self.owner}/{self.repo}"
 
@@ -109,9 +114,10 @@ def run_handle(
     tick = None
     try:
         if kind == "pull":
-            issue_url = _issue_for_pr(owner, repo, number, instance_dir, bot)
-            if not issue_url:
-                return False, f"No /handle pipeline tracks {owner}/{repo}#{number}"
+            # A PR an issue's pipeline opened belongs to that issue; any other
+            # PR is a pipeline of its own, keyed by its own URL.
+            pr_url = f"https://github.com/{owner}/{repo}/pull/{number}"
+            issue_url = handle_state.find_issue_for_pr(instance_dir, pr_url) or pr_url
         tick = _load_tick(issue_url, project_path, project_name, instance_dir, bot, context)
         return _dispatch(tick)
     # Runner boundary: any failure is reported on the issue, never swallowed.
@@ -125,15 +131,6 @@ def _bot_login() -> str:
     from app.utils import load_config
 
     return get_github_nickname(load_config())
-
-
-def _issue_for_pr(owner: str, repo: str, number: str, instance_dir: str, bot: str) -> str:
-    tracked = handle_state.find_issue_for_pr(
-        instance_dir, f"https://github.com/{owner}/{repo}/pull/{number}",
-    )
-    if not tracked:
-        gh.post_comment(owner, repo, number, render("not_tracked", bot=bot))
-    return tracked or ""
 
 
 def _load_tick(
@@ -258,12 +255,26 @@ def _head_ci(tick: Tick) -> str:
 
 
 def _start(tick: Tick) -> Result:
-    if tick.issue.get("is_pr"):
-        return False, f"{tick.issue_url} is a pull request, not an issue"
+    if tick.is_pr:
+        return _adopt_pr(tick)
     tick.save(project=tick.project_name, phase="triage")
     gh.assign_self(tick.owner, tick.repo, tick.number)
     _move_board(tick, "in_progress")
     return _triage(tick)
+
+
+def _adopt_pr(tick: Tick) -> Result:
+    """Drive a PR no issue pipeline tracks: it already exists, so start at CI."""
+    pr = gh.pr_info(tick.owner, tick.repo, tick.number)
+    if pr.get("isCrossRepository"):
+        # /rebase --fix pushes to the head branch and the CI read looks up runs
+        # by branch name in this repository: neither reaches a fork.
+        tick.comment("fork_pr")
+        return True, f"{tick.issue_url} comes from a fork; not handled"
+    tick.pr_view = pr
+    tick.save(project=tick.project_name, pr_url=pr["url"], pr_number=tick.number,
+              branch=pr["headRefName"], review_round=0)
+    return _await_ci(tick)
 
 
 def _triage(tick: Tick) -> Result:
@@ -673,6 +684,8 @@ def _recheck_pending(tick: Tick, after: str) -> bool:
 
 
 def _move_board(tick: Tick, column_key: str) -> None:
+    if tick.is_pr:
+        return  # the board tracks issues; adding a PR to it would be noise
     board = tick.config["board"]
     column = board.get(column_key) or ""
     error = gh.move_on_board(board, tick.issue.get("node_id", ""), column)

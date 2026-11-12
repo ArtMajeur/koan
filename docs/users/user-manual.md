@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered walkthrough of Kōan, from first missions through REST/MCP skill discovery, parallel sessions, exploration, and configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-11-09
+updated: 2026-11-12
 ---
 
 # Kōan User Manual
@@ -572,8 +572,8 @@ If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebas
 
 **`/handle`** — Carry a GitHub issue end to end: triage, plan, implementation, CI, review/fix loop, optional browser QA, then hand the PR to a human. Each step runs as its own mission (fresh context); `/handle` is the cheap tick that reads where the issue stands and queues the next step.
 
-- **Usage:** `/handle <issue-url>`
-- **GitHub @mention:** `@koan-bot handle` on an issue (to start, or to resume after answering a question)
+- **Usage:** `/handle <issue-url>` or `/handle <pr-url>`
+- **GitHub @mention:** `@koan-bot handle` on an issue or a pull request (to start, or to resume after answering a question)
 
 How it flows:
 
@@ -584,7 +584,7 @@ How it flows:
 5. **QA** (optional) — when the PR's preview deployment is up, the configured QA command runs against it.
 6. **Hand-off** — the PR leaves draft, the requester is asked to review it and pinged on the issue.
 
-The **requester** is whoever last commented `@koan-bot handle` on the issue, if they are allowed to command the bot (`github.authorized_users`); it is stored, so a later comment from someone else does not take over. Started from chat, it is the issue author when allowed, otherwise nobody is mentioned. Every stop — including an unexpected error — pings the requester; answering in the thread and commenting `@koan-bot handle` again resumes from the step that stopped (a stop only reopens once someone has replied after it, on the issue or on the PR). Autoreview is skipped for PRs a `/handle` pipeline drives, since the pipeline runs its own review/fix loop. Likewise, the bot being assigned to an issue `/handle` carries never starts `/implement` on its own (the pipeline assigned it): a plain comment on the issue starts nothing, only `@koan-bot handle` does. A `/handle` on a PR the pipeline opened resumes its issue. Once the PR is handed off, `@koan-bot handle` starts a new fix round from the latest review; on a closed PR it starts over from triage. **Closing the issue calls the pipeline off** (a step already queued still runs); reopen it and comment `@koan-bot handle` to pick it up again. In chat, each step reports its own outcome; the ticks between steps are logged only.
+The **requester** is whoever last commented `@koan-bot handle` on the issue, if they are allowed to command the bot (`github.authorized_users`); it is stored, so a later comment from someone else does not take over. Started from chat, it is the issue author when allowed, otherwise nobody is mentioned. Every stop — including an unexpected error — pings the requester; answering in the thread and commenting `@koan-bot handle` again resumes from the step that stopped (a stop only reopens once someone has replied after it, on the issue or on the PR). Autoreview is skipped for PRs a `/handle` pipeline drives, since the pipeline runs its own review/fix loop. Likewise, the bot being assigned to an issue `/handle` carries never starts `/implement` on its own (the pipeline assigned it): a plain comment on the issue starts nothing, only `@koan-bot handle` does. A `/handle` on a PR the pipeline opened resumes its issue. On any other PR it starts a pipeline for that PR alone: no triage, plan or implementation (the PR already exists), so it starts at CI and runs the same review/fix loop, QA and hand-off, without self-assignment or board moves. A PR from a fork is declined, since the bot cannot push fixes to it. Once the PR is handed off, `@koan-bot handle` starts a new fix round from the latest review; on a closed PR it starts over from triage. **Closing the issue calls the pipeline off** (a step already queued still runs); reopen it and comment `@koan-bot handle` to pick it up again. In chat, each step reports its own outcome; the ticks between steps are logged only.
 
 CI is judged on the PR's latest commit only, and the hand-off says what it found ("CI is green", or that no CI ran).
 
@@ -1916,7 +1916,7 @@ Eleven skills can be triggered by commenting `@koan-bot <command>` on GitHub iss
 | `/brainstorm` | `@koan-bot /brainstorm <topic>` on an issue |
 | `/implement` | `@koan-bot /implement` on an issue |
 | `/fix` | `@koan-bot /fix` on an issue |
-| `/handle` | `@koan-bot handle` on an issue |
+| `/handle` | `@koan-bot handle` on an issue or a PR |
 | `/debug` | `@koan-bot /debug` on an issue |
 | `/review` | `@koan-bot /review` on a PR |
 | `/rebase` | `@koan-bot /rebase` on a PR |
@@ -2549,7 +2549,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
-| `/handle <issue>` | — | I | Issue → triage → plan → PR → CI/review loop → hand-off, stopping at human gates |
+| `/handle <issue\|pr>` | — | I | Issue → triage → plan → PR → CI/review loop → hand-off, stopping at human gates; on a standalone PR, starts at CI |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase --fix` |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
 | `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | I | Review one or more pull requests |

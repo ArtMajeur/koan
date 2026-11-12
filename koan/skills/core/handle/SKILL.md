@@ -11,7 +11,7 @@ github_enabled: true
 github_context_aware: false
 commands:
   - name: handle
-    description: "Take a GitHub issue from triage to a review-ready PR, stopping at human gates"
-    usage: "/handle <issue-url>"
+    description: "Take a GitHub issue from triage to a review-ready PR (or a PR from CI to hand-off), stopping at human gates"
+    usage: "/handle <issue-or-pr-url>"
 handler: handler.py
 ---
