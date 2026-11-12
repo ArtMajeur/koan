@@ -43,7 +43,7 @@ after an error, a lost event file) it re-evaluates the phase.
 | Phase | Entered when | The tick does |
 |---|---|---|
 | *(none)* | first `/handle` | assign the bot, board → in-progress, run triage (LLM, read-only) |
-| `planning` | triage says `go` | after `/plan`: read the plan's *Open Questions*; a single "none" line (optionally "— ready to implement", nothing else) → `implementing`, else gate |
+| `planning` | triage says `go` | after `/plan`: read the plan's *Open Questions*; a single "none" line (optionally "— ready to implement", which may be followed by a note with no question mark on the same line) → `implementing`, else gate |
 | `implementing` | plan is clear | after `/implement`: the bot's own open PR on `<prefix>implement-<N>` from the base repository (never a fork's same-named branch), updated since the phase started → `ci` |
 | `ci` | PR known | decide from the **PR head's own runs** (below) |
 | `reviewing` | head CI green, or no CI | after `/review --force`: the review sidecar's `lgtm` for the **PR head** |

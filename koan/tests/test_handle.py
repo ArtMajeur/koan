@@ -226,7 +226,15 @@ class TestOpenQuestions:
         assert open_questions(_plan_body(text)) == ""
 
     @pytest.mark.parametrize("text", [
+        "None, ready to implement. Approach B (rejected) and the backlog review were settled on 2026-11-12.",
+        "None — ready to implement. Both decisions were settled in the thread.",
+    ])
+    def test_ready_to_implement_with_a_note_is_accepted(self, text):
+        assert open_questions(_plan_body(text)) == ""
+
+    @pytest.mark.parametrize("text", [
         "- Should guests see it?",
+        "None — ready to implement. Is the currency EUR?",
         "None of these block, but: should guests see it?",
         "N/A — but please confirm the currency",
         "None: the currency is EUR, right?",
