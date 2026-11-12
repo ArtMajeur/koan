@@ -526,9 +526,10 @@ heuristic:
   `main()` ends with `report_failure_unless_reported`, so a failure path that only
   returned its summary still reaches chat, once.
 - **A `/handle` pipeline reports milestones; the loop keeps its steps quiet.** A tick
-  hands over a milestone (`KOAN_OUTCOME_MILESTONE:` `progress` / `gate` / `handoff`) and
-  the loop sends its fixed line from `outcome_line.PIPELINE_MILESTONES`
-  (`⏸ [p] 🧭 Needs you: <url>`), except a chained tick's `progress`, which is logged. In
+  hands over a milestone (`KOAN_OUTCOME_MILESTONE:` `progress` / `gate` / `handoff` /
+  `stopped`) and the loop sends its fixed line from `outcome_line.PIPELINE_MILESTONES`
+  (`⏸ [p] 🧭 Needs you: <url>`), except a chained tick's `progress` or `stopped`, which
+  is logged. In
   `normal` mode the success line of a mission the pipeline queued for itself
   (`handle_state.owns_mission`: its current step, a `/ci_check` on its PR) is logged only;
   a failure always surfaces, and the same skill queued by an operator is unaffected. The

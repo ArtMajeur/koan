@@ -22,9 +22,11 @@ SKILL_COMPLETION = {
 }
 
 # /handle tick milestone → (icon, label). The pipeline's own chat lines: a
-# human poke that moved it on, a stop at a human gate, the hand-off.
+# human poke that moved it on, a stop at a human gate, the hand-off, a poke
+# it declines or that ends it.
 PIPELINE_MILESTONES = {
     "progress": ("✅", "Handling"),
+    "stopped": ("⏹", "Not handling"),
     "gate": ("⏸", "Needs you:"),
     "handoff": ("✅", "Ready for your review:"),
 }

@@ -1161,9 +1161,10 @@ def _notify_mission_normal(
     # A pipeline (/handle) reports its milestones only: a human poke, a stop at
     # a gate, the hand-off. The ticks it queues for itself (`after:<step>`) and
     # its step missions are logged; one line per step and per fix round would
-    # bury the message that asks for a human.
+    # bury the message that asks for a human. A chained tick that finds the
+    # issue or PR closed is logged too: a human closed it.
     from app.missions import is_continuation_mission
-    quiet_tick = is_continuation_mission(title) and milestone in ("", "progress")
+    quiet_tick = is_continuation_mission(title) and milestone in ("", "progress", "stopped")
     if quiet_tick or (not milestone and _pipeline_owns(instance, title)):
         from app.run_log import log_safe
         log_safe(

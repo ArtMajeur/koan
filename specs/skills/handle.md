@@ -131,7 +131,8 @@ state) — it never asserts green from an earlier signal.
   | human poke that moved the pipeline on (or answered "busy") | `✅ [project] 🧭 Handling <issue-url>` + what it did (`/implement queued`) |
   | stops at a gate — poke or chained — or a poke finds the gate unanswered | `⏸ [project] 🧭 Needs you: <issue-url>` + what blocks |
   | hand-off | `✅ [project] 🧭 Ready for your review: <pr-url>` + the head's CI as read |
-  | chained tick that only advances, waits, or is stale | log only |
+  | human poke that the pipeline declines or that ends it (fork PR, closed issue, closed or merged PR) | `⏹ [project] 🧭 Not handling <issue-url>` + why |
+  | chained tick that only advances, waits, is stale, or finds the issue or PR closed | log only |
   | failed tick | `❌ [project] Failed: /handle <url>` + the reason |
 
   What the pipeline queued for itself is logged only when it succeeds: the step its phase

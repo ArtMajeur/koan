@@ -312,6 +312,7 @@ def _adopt_pr(tick: Tick) -> Result:
         # /rebase --fix pushes to the head branch and the CI read looks up runs
         # by branch name in this repository: neither reaches a fork.
         tick.comment("fork_pr")
+        tick.milestone, tick.note = "stopped", "The pull request comes from a fork"
         return True, f"{tick.issue_url} comes from a fork; not handled"
     tick.save(project=tick.project_name, pr_url=pr["url"], pr_number=tick.number,
               branch=pr["headRefName"], review_round=0)
@@ -614,6 +615,7 @@ def _reenter(tick: Tick) -> Result:
     if state == "MERGED":
         tick.comment("merged", pr_url=tick.pr_url)
         tick.save(phase="stopped")
+        tick.milestone, tick.note = "stopped", "The pull request is already merged"
         return True, f"{tick.pr_url} already merged"
     if _issue_closed(tick):
         return _stop_on_closed_issue(tick)
@@ -668,6 +670,7 @@ def _replied_since_gate(tick: Tick) -> bool:
 def _stop(tick: Tick, state: str) -> Result:
     tick.comment("stopped", pr_url=tick.pr_url, state=render(f"state_{state}"))
     tick.save(phase="stopped", resume=None)
+    tick.milestone, tick.note = "stopped", f"The pull request is {state}"
     return True, f"{tick.pr_url} {state}; pipeline stopped"
 
 
@@ -682,10 +685,14 @@ def _stop_on_closed_issue(tick: Tick) -> Result:
     """
     if not tick.is_pr:
         tick.comment("issue_closed")
+        tick.note = "The issue is closed"
     elif _pr(tick)["state"] == "MERGED":
         tick.comment("merged", pr_url=tick.issue_url)
+        tick.note = "The pull request is merged"
     else:
         tick.comment("pr_closed")
+        tick.note = "The pull request is closed"
+    tick.milestone = "stopped"
     tick.save(phase="stopped", resume=None)
     return True, f"{tick.issue_url} is closed; pipeline stopped"
 

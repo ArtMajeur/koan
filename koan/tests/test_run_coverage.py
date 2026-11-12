@@ -103,6 +103,8 @@ class TestNotifyMissionNormal:
          "✅ [proj] 🧭 Handling https://x/issues/7\n/implement queued"),
         ("gate", "/handle https://x/issues/7 after:review",
          "⏸ [proj] 🧭 Needs you: https://x/issues/7\n/implement queued"),
+        ("stopped", "/handle https://x/issues/7",
+         "⏹ [proj] 🧭 Not handling https://x/issues/7\n/implement queued"),
         ("handoff", "/handle https://x/issues/7 after:review",
          "✅ [proj] 🧭 Ready for your review: https://x/issues/7\n/implement queued"),
     ])
@@ -114,13 +116,14 @@ class TestNotifyMissionNormal:
             )
         mock_notify.assert_called_once_with("/inst", expected, verbatim=True)
 
-    def test_chained_tick_that_only_advances_is_logged_not_pushed(self):
+    @pytest.mark.parametrize("milestone", ["progress", "stopped"])
+    def test_chained_tick_that_only_advances_or_stops_is_logged_not_pushed(self, milestone):
         with patch.object(run, "_notify") as mock_notify, \
              patch("app.run_log.log_safe") as mock_log:
             sent = run._notify_mission_normal(
                 "/inst", "proj", 1, 60, 0, "/handle https://github.com/o/r/issues/7 after:plan",
                 "https://github.com/o/r/issues/7", detail="/implement queued",
-                milestone="progress",
+                milestone=milestone,
             )
         assert sent is False
         mock_notify.assert_not_called()

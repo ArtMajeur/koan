@@ -1348,6 +1348,14 @@ class TestChatOutcome:
         pipeline.run()
         assert pipeline.outcome.milestone == "gate"
 
+    def test_a_poke_on_a_closed_issue_is_not_handled(self, pipeline):
+        pipeline.seed(phase="planning")
+        pipeline.github.issue["state"] = "closed"
+        pipeline.run()
+        outcome = pipeline.outcome
+        assert (outcome.milestone, outcome.url, outcome.note) == (
+            "stopped", ISSUE, "The issue is closed")
+
     def test_handover_markers_carry_the_milestone(self):
         from app.outcome_line import read_markers
         found = read_markers(handle_runner._handover(
