@@ -91,6 +91,72 @@ class TestNotifyMissionNormal:
         mock_notify.assert_not_called()
         mock_log.assert_called_once()
 
+    def test_title_is_shown_without_queue_metadata(self):
+        with patch.object(run, "_notify") as mock_notify:
+            run._notify_mission_normal(
+                "/inst", "proj", 1, 60, 0, "improve docs 📬 ⏳(2026-11-12T12:58)", "",
+            )
+        assert mock_notify.call_args[0][1] == "✅ [proj] Done: improve docs"
+
+    @pytest.mark.parametrize("milestone,title,expected", [
+        ("progress", "/handle https://x/issues/7 📬 ⏳(2026-11-12T12:58)",
+         "✅ [proj] 🧭 Handling https://x/issues/7\n/implement queued"),
+        ("gate", "/handle https://x/issues/7 after:review",
+         "⏸ [proj] 🧭 Needs you: https://x/issues/7\n/implement queued"),
+        ("handoff", "/handle https://x/issues/7 after:review",
+         "✅ [proj] 🧭 Ready for your review: https://x/issues/7\n/implement queued"),
+    ])
+    def test_handle_tick_reports_its_milestone(self, milestone, title, expected):
+        with patch.object(run, "_notify") as mock_notify:
+            run._notify_mission_normal(
+                "/inst", "proj", 1, 60, 0, title, "https://x/issues/7",
+                detail="/implement queued", reported=True, milestone=milestone,
+            )
+        mock_notify.assert_called_once_with("/inst", expected, verbatim=True)
+
+    def test_chained_tick_that_only_advances_is_logged_not_pushed(self):
+        with patch.object(run, "_notify") as mock_notify, \
+             patch("app.run_log.log_safe") as mock_log:
+            sent = run._notify_mission_normal(
+                "/inst", "proj", 1, 60, 0, "/handle https://github.com/o/r/issues/7 after:plan",
+                "https://github.com/o/r/issues/7", detail="/implement queued",
+                milestone="progress",
+            )
+        assert sent is False
+        mock_notify.assert_not_called()
+        mock_log.assert_called_once()
+
+    def test_pipeline_step_success_is_logged_not_pushed(self, tmp_path):
+        from app import handle_state
+        step = "/review https://github.com/o/r/pull/9 --force"
+        handle_state.update_record(
+            str(tmp_path), "https://github.com/o/r/issues/7", phase="reviewing", step=step)
+        with patch.object(run, "_notify") as mock_notify:
+            sent = run._notify_mission_normal(
+                str(tmp_path), "proj", 1, 60, 0, f"[project:proj] {step}",
+                "https://github.com/o/r/pull/9", reported=True,
+            )
+            assert sent is False
+            mock_notify.assert_not_called()
+            # The same command outside the pipeline's step keeps its line.
+            run._notify_mission_normal(
+                str(tmp_path), "proj", 1, 60, 0, "/review https://github.com/o/r/pull/9",
+                "https://github.com/o/r/pull/9", reported=True,
+            )
+        assert mock_notify.call_args[0][1] == "✅ [proj] 🔍 Reviewed https://github.com/o/r/pull/9"
+
+    def test_pipeline_step_failure_still_surfaces(self, tmp_path):
+        from app import handle_state
+        step = "/review https://github.com/o/r/pull/9 --force"
+        handle_state.update_record(
+            str(tmp_path), "https://github.com/o/r/issues/7", phase="reviewing", step=step)
+        with patch.object(run, "_notify") as mock_notify:
+            run._notify_mission_normal(
+                str(tmp_path), "proj", 1, 60, 1, step, "https://github.com/o/r/pull/9",
+                reason="timed out", reported=True,
+            )
+        assert mock_notify.call_args[0][1].startswith("❌ [proj] 🔍 Review failed:")
+
     def test_recurring_mission_failure_still_surfaces(self):
         with patch.object(run, "_notify") as mock_notify:
             run._notify_mission_normal(

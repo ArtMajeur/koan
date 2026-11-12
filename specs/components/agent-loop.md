@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-10-13
+updated: 2026-11-12
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -525,6 +525,15 @@ heuristic:
   Otherwise (`debug`) the runner sends the same template itself. A runner's
   `main()` ends with `report_failure_unless_reported`, so a failure path that only
   returned its summary still reaches chat, once.
+- **A `/handle` pipeline reports milestones; the loop keeps its steps quiet.** A tick
+  hands over a milestone (`KOAN_OUTCOME_MILESTONE:` `progress` / `gate` / `handoff`) and
+  the loop sends its fixed line from `outcome_line.PIPELINE_MILESTONES`
+  (`⏸ [p] 🧭 Needs you: <url>`), except a chained tick's `progress`, which is logged. In
+  `normal` mode the success line of a mission the pipeline queued for itself
+  (`handle_state.owns_mission`: its current step, a `/ci_check` on its PR) is logged only;
+  a failure always surfaces, and the same skill queued by an operator is unaffected. The
+  `Done:` / `Failed:` lines show the title without queue metadata (`📬`, `⏳(…)`,
+  `[r:N]`). See `specs/skills/handle.md` → *Chat*.
 - **Contemplative failures must surface, not swallow.** `_handle_contemplative`
   captures the CLI exit code and runs `_notify_contemplative_failure`, which classifies
   the outcome (529 overload, quota, auth, transient, exit-code) and sends ONE throttled

@@ -25,6 +25,11 @@ from app.github_url_parser import PR_OR_ISSUE_PATTERN
 STATE_FILENAME = ".handle-state.json"
 _RECORD_KEY_RE = re.compile(PR_OR_ISSUE_PATTERN)
 
+# Phases waiting on a queued step mission whose follow-up tick will judge it.
+STEP_PHASES = ("planning", "implementing", "reviewing", "fixing", "qa_running")
+# Phases in which nothing moves until a human pokes the pipeline.
+_PARKED_PHASES = ("", "waiting_human", "done", "stopped")
+
 
 def _state_path(instance_dir: str) -> Path:
     return Path(instance_dir) / STATE_FILENAME
@@ -148,6 +153,45 @@ def tracks_issue(instance_dir: str, issue_url: str) -> bool:
         return False
     wanted = issue_url.rstrip("/").lower()
     return any(url.rstrip("/").lower() == wanted for url in _read_all(instance_dir))
+
+
+def _drives(record: dict) -> bool:
+    return record.get("phase", "") not in _PARKED_PHASES
+
+
+def drives_pr(instance_dir: str, pr_url: str) -> bool:
+    """True while a pipeline is moving *pr_url* forward on its own.
+
+    The pipeline then owns what chat hears about that PR: a green CI between
+    two fix rounds is not "ready for review". A pipeline parked at a gate or
+    finished owns nothing.
+    """
+    if not _state_path(instance_dir).exists():
+        return False
+    found = _record_for_pr(_read_all(instance_dir), pr_url)
+    return bool(found and _drives(found[1]))
+
+
+def owns_mission(instance_dir: str, mission_title: str) -> bool:
+    """True when a pipeline queued *mission_title* for itself.
+
+    That is the step its current phase waits for, or a ``/ci_check`` on the PR
+    it drives. An operator's own ``/review`` or ``/implement`` never matches.
+    """
+    title = mission_title or ""
+    if not _state_path(instance_dir).exists():
+        return False
+    data = _read_all(instance_dir)
+    for record in data.values():
+        step = isinstance(record, dict) and record.get("step")
+        if step and record.get("phase") in STEP_PHASES and step in title:
+            return True
+    if "/ci_check " not in title:
+        return False
+    urls = (m.group(0) for m in _RECORD_KEY_RE.finditer(title))
+    return any(
+        found and _drives(found[1]) for found in (_record_for_pr(data, url) for url in urls)
+    )
 
 
 def mission_line(project_name: str, command: str) -> str:

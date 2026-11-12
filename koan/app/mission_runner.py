@@ -1702,7 +1702,7 @@ def _extract_pr_url(content: str) -> str:
 def outcome_from_stdout(stdout: str) -> dict:
     """The outcome a skill runner handed over on stdout, as
     ``_notify_mission_end`` keyword arguments: ``pr_url``, ``reason``,
-    ``detail``, ``reported``.
+    ``detail``, ``reported``, ``milestone`` (a /handle tick's).
 
     See ``messaging_level.report_outcome``. Once the runner reported, its URL is
     final — it can be an issue URL, the new PR of a /recreate, or none at all
@@ -1717,6 +1717,7 @@ def outcome_from_stdout(stdout: str) -> dict:
         "reason": found["reason"],
         "detail": found["detail"],
         "reported": found["reported"],
+        "milestone": found["milestone"],
     }
 
 

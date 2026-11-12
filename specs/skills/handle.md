@@ -115,15 +115,34 @@ state) — it never asserts green from an earlier signal.
 ## Outputs / side effects
 
 - **State:** `instance/.handle-state.json`, one record per canonical issue URL (phase,
-  requester, PR, branch, review round, phase start, resume target, CI counters). Every
+  requester, PR, branch, review round, phase start, resume target, CI counters, the
+  queued `step` command). Every
   read-modify-write holds a file lock; the CI relay checks and updates under one lock.
 - **Missions:** each queued step is followed by `/handle <issue> after:<step>`; re-checks
   are one-shot events (`instance/events/`) queuing `/handle <issue> after:ci-poll|qa-wait`.
 - **GitHub:** issue comments (triage, gates, errors, hand-off), self-assignment, PR marked
   ready, review requested from the requester, optional board column moves.
-- **Chat:** at the normal messaging level a chained tick that succeeds is logged only (no
-  `Done:` line per tick); a failed tick, a human `/handle` and every step mission still
-  report as usual. See `docs/messaging/messaging-level.md`.
+- **Chat:** the pipeline reports its **milestones**, not its steps. Every tick hands the
+  agent loop one outcome (stdout markers, `outcome_line`), and at the normal messaging
+  level the loop sends:
+
+  | Tick | Chat |
+  |---|---|
+  | human poke that moved the pipeline on (or answered "busy") | `✅ [project] 🧭 Handling <issue-url>` + what it did (`/implement queued`) |
+  | stops at a gate — poke or chained — or a poke finds the gate unanswered | `⏸ [project] 🧭 Needs you: <issue-url>` + what blocks |
+  | hand-off | `✅ [project] 🧭 Ready for your review: <pr-url>` + the head's CI as read |
+  | chained tick that only advances, waits, or is stale | log only |
+  | failed tick | `❌ [project] Failed: /handle <url>` + the reason |
+
+  What the pipeline queued for itself is logged only when it succeeds: the step its phase
+  waits for (`/plan`, `/implement`, `/review --force`, `/rebase --fix`, the QA command —
+  recorded as `step` when queued), a `/ci_check` on the PR, and the `## CI` queue's own
+  lines about that PR ("CI passed — ready for review" between two fix rounds is not
+  true). A step that **fails** always reports. This holds while the pipeline moves on its
+  own (any phase but a gate, `done`, `stopped`); a pipeline parked at a gate owns nothing,
+  and the same command queued by a human (another URL or other arguments) reports as
+  usual. An unreadable state file sends the message rather than hide it. The `debug`
+  level sends every mission's line (the `## CI` lines stay quiet). See `docs/messaging/messaging-level.md`.
 
 ## Requester
 
@@ -248,7 +267,11 @@ resumes once someone has replied in either thread.
   reason: without the guard, the first comment on a gated issue starts `/implement` behind
   the gate. Only `@<bot> handle` moves such an issue. Best-effort like the autoreview guard:
   an unreadable state file is logged and the fallback proceeds.
-- **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`.
+- **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`, and
+  sends its chat line about a PR only when no pipeline drives it (`handle_state.drives_pr`).
+- **Agent loop:** `run._notify_mission_end()` reads the tick's milestone
+  (`KOAN_OUTCOME_MILESTONE:`) and skips the success line of a mission the pipeline queued
+  for itself (`handle_state.owns_mission`).
 - **Autoreview:** `mission_runner._maybe_queue_autoreview()` skips a mission whose issue
   (or pull request, for a pull-request pipeline) an active `/handle` pipeline is keyed by
   (`handle_state.tracks_mission`): a second review/fix
