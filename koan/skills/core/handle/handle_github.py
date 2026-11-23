@@ -210,6 +210,15 @@ def pr_info(owner: str, repo: str, number: str) -> dict:
     return data
 
 
+def pr_files(owner: str, repo: str, number: str) -> List[dict]:
+    """The PR's changed files: ``{filename, status, deletions, sha}``, against its base."""
+    raw = run_gh(
+        "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/files",
+        "--jq", ".[] | {filename, status, deletions, sha}",
+    )
+    return [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
 def mark_ready(owner: str, repo: str, number: str) -> None:
     """Take the PR out of draft; raises, because CI may depend on it."""
     run_gh("pr", "ready", number, "--repo", f"{owner}/{repo}")

@@ -1060,6 +1060,11 @@ page_cache_reclaim:
 #     preview_environment: review/pr-{pr}   # GitHub deployment environment of the PR preview
 #     wait_minutes: 5          # Re-check interval while the preview deploys (default: 5)
 #     max_wait_ticks: 5        # Re-checks before handing off without QA (default: 5)
+#   data_guard:                # PR paths that stop the pipeline for a human before CI.
+#                              # Each list replaces its default; per project in projects.yaml too.
+#     migrations: ["migrations/*", "*/migrations/*", "db/migrate/*", "*.sql"]
+#     scripts: ["bin/*", "scripts/*", "src/Command/*"]
+#     translations: ["translations/*", "*/locales/*"]   # only edits/removals stop; new keys pass
 
 # CI dispatch: auto-create fix missions when CI fails on Koan's open PRs.
 # Checks GitHub check-runs API each iteration (per-project cooldown).

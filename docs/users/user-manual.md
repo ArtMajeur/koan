@@ -577,9 +577,9 @@ If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebas
 
 How it flows:
 
-1. **Triage** — Kōan assigns itself, reads the code the issue points to, and posts its assessment. If it is not a bug, or a human must answer something first, it pings the requester and stops.
+1. **Triage** — Kōan assigns itself, reads the code the issue points to, and posts its assessment. If it is not a bug, or a human must answer something first, it pings the requester and stops. It also stops when the fix would change data: a database migration, a new or changed command or script, a change to existing translations, or any other data fix. Adding new translation keys is the one exception.
 2. **Plan** — `/plan` on the issue. If the plan's *Open Questions* section is empty, implementation starts; otherwise the requester is pinged.
-3. **Implement** — `/implement` opens a draft PR, which joins the `## CI` queue (CI failures are fixed by `/ci_check` as usual).
+3. **Implement** — `/implement` opens a draft PR, which joins the `## CI` queue (CI failures are fixed by `/ci_check` as usual). Before CI, and again after every fix round, the PR's files are checked: a migration, a command or script, or an edited or removed translation stops the pipeline and lists the files. `@koan-bot handle` approves those files as they are and continues; editing one of them later stops it again.
 4. **Review/fix loop** — once the PR's latest commit has green CI, `/review`; blocking findings (critical or warning) trigger `/rebase --fix`, then CI and review again. `handle.max_review_rounds` (default 3) bounds the fix rounds, so a PR gets at most 4 reviews.
 5. **QA** (optional) — when the PR's preview deployment is up, the configured QA command runs against it.
 6. **Hand-off** — the PR leaves draft, the requester is asked to review it and pinged on the issue.
@@ -609,7 +609,13 @@ handle:
     preview_environment: review/pr-{pr}   # GitHub deployment environment of the PR preview
     wait_minutes: 5                  # re-check interval while the preview deploys
     max_wait_ticks: 5
+  data_guard:                        # PR paths that need a human before CI (fnmatch patterns)
+    migrations: ["migrations/*", "*/migrations/*", "db/migrate/*", "*.sql"]
+    scripts: ["bin/*", "scripts/*", "src/Command/*"]
+    translations: ["translations/*", "*/locales/*"]   # only edits/removals stop; new keys pass
 ```
+
+`data_guard` has defaults covering common framework layouts; a list you set replaces that category's default. It can also be set per project in `projects.yaml`, where a project's list replaces the global one.
 
 QA needs a preview deployment, which only some repositories have. `handle.qa` can therefore be set per project in `projects.yaml` (under a project, or under `defaults`), where it overrides the global one key by key. To run QA on one project only, leave `qa` out of `config.yaml` and put it on that project; the others hand the PR off right after the review, without waiting for a preview:
 

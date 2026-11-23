@@ -1547,7 +1547,9 @@ def get_handle_config(project_name: str = "") -> dict:
     ``board`` (dict, optional GitHub Projects v2 board), ``product_team``
     (org team slug, optional) and ``qa`` (dict: ``command``,
     ``preview_environment``, ``max_wait_ticks``, ``wait_minutes`` — QA is off
-    without a command and a preview environment).
+    without a command and a preview environment) and ``data_guard`` (dict of
+    path-pattern lists ``migrations``, ``scripts``, ``translations``: the PR
+    files that need a human before CI; per project like ``qa``).
     """
     section = _load_config().get("handle") or {}
     if not isinstance(section, dict):
@@ -1568,7 +1570,35 @@ def get_handle_config(project_name: str = "") -> dict:
             "max_wait_ticks": max(1, _safe_int(qa.get("max_wait_ticks", 5), 5)),
             "wait_minutes": max(1, _safe_int(qa.get("wait_minutes", 5), 5)),
         },
+        "data_guard": _handle_data_guard(section, project_name),
     }
+
+
+# Common framework layouts; a project with another layout sets its own lists.
+_DEFAULT_DATA_GUARD = {
+    "migrations": ["migrations/*", "*/migrations/*", "*/Migrations/*",
+                   "db/migrate/*", "*.sql"],
+    "scripts": ["bin/*", "scripts/*", "src/Command/*", "*/src/Command/*",
+                "*/management/commands/*", "app/Console/Commands/*"],
+    "translations": ["translations/*", "*/translations/*", "*/locale/*", "*/locales/*",
+                     "*/i18n/*"],
+}
+
+
+def _handle_data_guard(section: dict, project_name: str) -> dict:
+    """Path patterns per category: the project's list, else the global one, else the default."""
+    handle = _load_project_overrides(project_name).get("handle")
+    layers = [
+        handle.get("data_guard") if isinstance(handle, dict) else None,
+        section.get("data_guard"),
+    ]
+    layers = [layer for layer in layers if isinstance(layer, dict)]
+    guard = {}
+    for category, default in _DEFAULT_DATA_GUARD.items():
+        patterns = next((layer[category] for layer in layers
+                         if isinstance(layer.get(category), list)), default)
+        guard[category] = [str(p) for p in patterns]
+    return guard
 
 
 def _project_handle_qa(project_name: str) -> dict:
