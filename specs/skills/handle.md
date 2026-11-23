@@ -111,7 +111,8 @@ The pipeline never ships a change to data without a human. Two layers:
   A PR pipeline is checked the same way: the gate applies to a human's PR too.
   When GitHub lists fewer files than the PR's `changed_files` (it caps the listing), the
   unlisted files cannot be checked: the gate names them as unchecked, and the poke
-  approves the PR head.
+  approves the PR head. The count and the head are read in one call after the listing;
+  a head that moved during the check fails the tick (error gate, `retry`).
 - *Known limit:* "only adds lines" is a line count, not a parse of the catalog; an
   added entry that redefines an existing key passes.
 

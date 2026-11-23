@@ -441,11 +441,16 @@ def _await_ci(tick: Tick) -> Result:
 
 def _unapproved_data_changes(tick: Tick) -> List[dict]:
     """PR files touching data (migrations, scripts, existing translations) not yet approved."""
+    head = _pr(tick)["headRefOid"]
     files = gh.pr_files(tick.owner, tick.repo, tick.pr_number)
-    total = gh.pr_changed_files(tick.owner, tick.repo, tick.pr_number)
+    total, head_after = gh.pr_changed_files(tick.owner, tick.repo, tick.pr_number)
+    if head_after != head:
+        # A push landed during the check: the listing may mix two heads, so it
+        # proves nothing. Fail closed; the retry reads the new head.
+        raise RuntimeError(f"PR head moved during the data-change check ({head} → {head_after})")
     approved = set(tick.record.get("data_changes_approved") or ())
     flagged = handle_data_guard.flagged_files(files, tick.config["data_guard"])
-    flagged += handle_data_guard.truncated_listing(len(files), total, _pr(tick)["headRefOid"])
+    flagged += handle_data_guard.truncated_listing(len(files), total, head)
     return [f for f in flagged if handle_data_guard.approval_key(f) not in approved]
 
 

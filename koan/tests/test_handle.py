@@ -68,6 +68,7 @@ class FakeGitHub:
         self.cross_repository = False
         self.files = []
         self.changed_files = None
+        self.head_after_listing = None
 
     def install(self, enter):
         gh = handle_runner.gh
@@ -108,7 +109,8 @@ class FakeGitHub:
         return [dict(f) for f in self.files]
 
     def pr_changed_files(self, owner, repo, number):
-        return self.changed_files if self.changed_files is not None else len(self.files)
+        total = self.changed_files if self.changed_files is not None else len(self.files)
+        return total, self.head_after_listing or HEAD
 
     def merge_commit_sha(self, owner, repo, number):
         return "merge456"
@@ -641,6 +643,13 @@ class TestDataChangeGate:
         self._implemented(pipeline, _file("src/Cart.php"))
         assert pipeline.record()["resume"] == "data_change"
         assert "3499 of 3500 files not listed" in pipeline.github.posted[-1]
+
+    def test_head_moving_during_the_check_fails_closed(self, pipeline):
+        pipeline.github.head_after_listing = "def456"
+        self._implemented(pipeline, _file("src/Cart.php"))
+        record = pipeline.record()
+        assert (record["phase"], record["resume"]) == ("waiting_human", "retry")
+        assert "## CI" not in pipeline.missions()
 
     def test_ci_fix_that_adds_a_migration_gates_before_review(self, pipeline):
         pipeline.seed(phase="ci", pr_url=PR, pr_number="12", branch="koan/implement-7",

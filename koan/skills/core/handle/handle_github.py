@@ -223,9 +223,14 @@ def pr_files(owner: str, repo: str, number: str) -> List[dict]:
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
-def pr_changed_files(owner: str, repo: str, number: str) -> int:
-    """How many files the PR changes, including any the file listing leaves out."""
-    return int(api(f"repos/{owner}/{repo}/pulls/{number}", jq=".changed_files") or 0)
+def pr_changed_files(owner: str, repo: str, number: str) -> Tuple[int, str]:
+    """``(changed_files, head sha)`` read together: how many files the PR changes
+    (including any the file listing leaves out) at which head."""
+    data = _json(api(f"repos/{owner}/{repo}/pulls/{number}",
+                     jq="{changed_files, head: .head.sha}"))
+    if not data:
+        raise RuntimeError(f"empty response for PR {owner}/{repo}#{number}")
+    return int(data.get("changed_files") or 0), data.get("head") or ""
 
 
 def mark_ready(owner: str, repo: str, number: str) -> None:
