@@ -67,6 +67,7 @@ class FakeGitHub:
         self.fail_comments_with = None
         self.cross_repository = False
         self.files = []
+        self.changed_files = None
 
     def install(self, enter):
         gh = handle_runner.gh
@@ -74,7 +75,7 @@ class FakeGitHub:
                      "post_comment", "assign_self",
                      "find_open_pr", "pr_info", "hand_off_pr", "preview_status",
                      "merge_commit_sha", "is_team_member", "move_on_board", "is_authorized",
-                     "pr_files"):
+                     "pr_files", "pr_changed_files"):
             enter(patch.object(gh, name, getattr(self, name)))
         enter(patch.object(handle_ci, "ci_at_head", lambda branch, repo, head: self.ci_state))
 
@@ -105,6 +106,9 @@ class FakeGitHub:
 
     def pr_files(self, owner, repo, number):
         return [dict(f) for f in self.files]
+
+    def pr_changed_files(self, owner, repo, number):
+        return self.changed_files if self.changed_files is not None else len(self.files)
 
     def merge_commit_sha(self, owner, repo, number):
         return "merge456"
@@ -581,6 +585,11 @@ class TestDataGuard:
         files = [_file("translations/messages.fr.xlf", status=status, deletions=deletions)]
         assert flagged_files(files, _DEFAULT_DATA_GUARD)[0]["label"] == "translation change"
 
+    def test_migration_renamed_out_of_its_folder_is_flagged(self):
+        moved = dict(_file("src/Legacy/Version1.php", status="renamed"),
+                     previous_filename="migrations/Version1.php")
+        assert flagged_files([moved], _DEFAULT_DATA_GUARD)[0]["label"] == "migration"
+
     def test_plain_code_is_not_flagged(self):
         files = [_file("src/Controller/CartController.php", deletions=5),
                  _file("tests/unit/Command/CartFixCommandTest.php", status="added")]
@@ -626,6 +635,20 @@ class TestDataChangeGate:
         pipeline.github.files = [_file(self.MIGRATION, status="added", sha="s2")]
         pipeline.run(after="fix")
         assert pipeline.record()["resume"] == "data_change"
+
+    def test_truncated_file_listing_gates(self, pipeline):
+        pipeline.github.changed_files = 3500
+        self._implemented(pipeline, _file("src/Cart.php"))
+        assert pipeline.record()["resume"] == "data_change"
+        assert "3499 of 3500 files not listed" in pipeline.github.posted[-1]
+
+    def test_ci_fix_that_adds_a_migration_gates_before_review(self, pipeline):
+        pipeline.seed(phase="ci", pr_url=PR, pr_number="12", branch="koan/implement-7",
+                      ci_polls=0, ci_empty_checks=0)
+        pipeline.github.files = [_file(self.MIGRATION, status="added")]
+        pipeline.run(after="ci")
+        assert pipeline.record()["resume"] == "data_change"
+        assert not any("/review" in m for m in pipeline.pending())
 
     def test_pull_request_pipeline_is_checked_too(self, pipeline):
         pipeline.github.issue.update(html_url=PR, is_pr=True)

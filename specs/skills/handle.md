@@ -51,7 +51,8 @@ after an error, a lost event file) it re-evaluates the phase.
 
 Every entry into `ci` (after `/implement`, after a fix round, when a PR pipeline starts,
 on a resume) first runs the **data-change check** below; a flagged change gates before
-CI is read.
+CI is read. Queuing a review runs it again: `/ci_check` may have pushed fixes during `ci`,
+and every hand-off follows a review of the PR head.
 | `qa` | review lgtm, QA configured for the project | preview deployment for the PR head (or its merge commit) ready, with an `environment_url` → queue the QA command; else re-check later, at most `max_wait_ticks` times per wait |
 | `qa_running` | QA queued | hand off, saying whether a QA report (marked comment) was posted |
 | `done` | hand-off made | a poke: open PR → new fix round; merged → `stopped`; closed → restart from triage |
@@ -94,7 +95,8 @@ The pipeline never ships a change to data without a human. Two layers:
   modifies stored data (backfill, cleanup, data fix). Adding new translation keys alone
   does not need a human.
 - **The PR's files**, read from the API (`pulls/<n>/files`), against the project's
-  `handle.data_guard` path patterns (`fnmatch` on the repository path):
+  `handle.data_guard` path patterns (`fnmatch` on the repository path; a renamed file
+  is matched on its old path too):
 
   | Category | Flagged when |
   |---|---|
@@ -107,6 +109,11 @@ The pipeline never ships a change to data without a human. Two layers:
   blob SHA) and moves on to `ci`; a later commit that touches an approved file, or flags
   a new one, gates again. The approval is stored in the record (`data_changes_approved`).
   A PR pipeline is checked the same way: the gate applies to a human's PR too.
+  When GitHub lists fewer files than the PR's `changed_files` (it caps the listing), the
+  unlisted files cannot be checked: the gate names them as unchecked, and the poke
+  approves the PR head.
+- *Known limit:* "only adds lines" is a line count, not a parse of the catalog; an
+  added entry that redefines an existing key passes.
 
 ### CI decision (phase `ci`)
 

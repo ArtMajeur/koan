@@ -16,10 +16,15 @@ _LABELS = {
 
 
 def flagged_files(files: List[dict], guard: Dict[str, List[str]]) -> List[dict]:
-    """The files that need a human: ``{filename, sha, label}``, in PR order."""
+    """The files that need a human: ``{filename, sha, label}``, in PR order.
+
+    A renamed file is matched on its old path too: moving a migration out of
+    its folder is still a change to it.
+    """
     flagged = []
     for f in files:
-        category = _category(f["filename"], guard)
+        paths = [f["filename"], f.get("previous_filename") or ""]
+        category = next(filter(None, (_category(p, guard) for p in paths if p)), None)
         if category is None:
             continue
         if category == "translations" and _only_adds(f):
@@ -27,6 +32,17 @@ def flagged_files(files: List[dict], guard: Dict[str, List[str]]) -> List[dict]:
         flagged.append({"filename": f["filename"], "sha": f.get("sha") or "",
                         "label": _LABELS[category]})
     return flagged
+
+
+def truncated_listing(listed: int, total: int, head_sha: str) -> List[dict]:
+    """A stand-in entry when GitHub listed fewer files than the PR changes.
+
+    The unlisted files cannot be checked, so a human approves this head.
+    """
+    if listed >= total:
+        return []
+    return [{"filename": f"{total - listed} of {total} files not listed by GitHub",
+             "sha": head_sha, "label": "unchecked"}]
 
 
 def approval_key(f: dict) -> str:

@@ -442,8 +442,10 @@ def _await_ci(tick: Tick) -> Result:
 def _unapproved_data_changes(tick: Tick) -> List[dict]:
     """PR files touching data (migrations, scripts, existing translations) not yet approved."""
     files = gh.pr_files(tick.owner, tick.repo, tick.pr_number)
+    total = gh.pr_changed_files(tick.owner, tick.repo, tick.pr_number)
     approved = set(tick.record.get("data_changes_approved") or ())
     flagged = handle_data_guard.flagged_files(files, tick.config["data_guard"])
+    flagged += handle_data_guard.truncated_listing(len(files), total, _pr(tick)["headRefOid"])
     return [f for f in flagged if handle_data_guard.approval_key(f) not in approved]
 
 
@@ -513,6 +515,11 @@ def _poll_ci(tick: Tick, state: str) -> Result:
 
 
 def _queue_review(tick: Tick) -> Result:
+    # /ci_check may have pushed fixes since the check on entering ci; every
+    # hand-off follows a review of the PR head, so checking here covers them.
+    flagged = _unapproved_data_changes(tick)
+    if flagged:
+        return _gate_data_changes(tick, flagged)
     return _queue(tick, f"/review {tick.pr_url} --force", "review", "reviewing")
 
 

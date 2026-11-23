@@ -211,12 +211,21 @@ def pr_info(owner: str, repo: str, number: str) -> dict:
 
 
 def pr_files(owner: str, repo: str, number: str) -> List[dict]:
-    """The PR's changed files: ``{filename, status, deletions, sha}``, against its base."""
+    """The PR's changed files against its base.
+
+    Each is ``{filename, previous_filename, status, deletions, sha}``. GitHub
+    lists at most 3000 files: compare with ``pr_changed_files``.
+    """
     raw = run_gh(
         "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/files",
-        "--jq", ".[] | {filename, status, deletions, sha}",
+        "--jq", ".[] | {filename, previous_filename, status, deletions, sha}",
     )
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
+def pr_changed_files(owner: str, repo: str, number: str) -> int:
+    """How many files the PR changes, including any the file listing leaves out."""
+    return int(api(f"repos/{owner}/{repo}/pulls/{number}", jq=".changed_files") or 0)
 
 
 def mark_ready(owner: str, repo: str, number: str) -> None:
