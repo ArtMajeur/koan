@@ -213,12 +213,14 @@ def pr_info(owner: str, repo: str, number: str) -> dict:
 def pr_files(owner: str, repo: str, number: str) -> List[dict]:
     """The PR's changed files against its base.
 
-    Each is ``{filename, previous_filename, status, deletions, sha}``. GitHub
-    lists at most 3000 files: compare with ``pr_changed_files``.
+    Each is ``{filename, previous_filename, status, additions, deletions, sha,
+    patch}``; the patch is kept for ``.json`` files only (the data guard reads
+    no other). GitHub lists at most 3000 files: compare with ``pr_changed_files``.
     """
     raw = run_gh(
         "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/files",
-        "--jq", ".[] | {filename, previous_filename, status, deletions, sha}",
+        "--jq", ".[] | {filename, previous_filename, status, additions, deletions, sha, "
+                'patch: (if (.filename | endswith(".json")) then .patch else null end)}',
     )
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 

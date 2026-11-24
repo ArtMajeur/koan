@@ -1576,12 +1576,12 @@ def get_handle_config(project_name: str = "") -> dict:
 
 # Common framework layouts; a project with another layout sets its own lists.
 _DEFAULT_DATA_GUARD = {
-    "migrations": ["migrations/*", "*/migrations/*", "*/Migrations/*",
+    "migrations": ["migrations/*", "*/migrations/*", "Migrations/*", "*/Migrations/*",
                    "db/migrate/*", "*.sql"],
     "scripts": ["bin/*", "scripts/*", "src/Command/*", "*/src/Command/*",
                 "*/management/commands/*", "app/Console/Commands/*"],
-    "translations": ["translations/*", "*/translations/*", "*/locale/*", "*/locales/*",
-                     "*/i18n/*"],
+    "translations": ["translations/*", "*/translations/*", "locale/*", "*/locale/*",
+                     "locales/*", "*/locales/*", "i18n/*", "*/i18n/*", "lang/*", "*/lang/*"],
 }
 
 

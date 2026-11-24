@@ -564,8 +564,9 @@ class TestImplement:
         assert pipeline.record()["resume"] == "implement"
 
 
-def _file(filename, status="modified", deletions=0, sha="s1"):
-    return {"filename": filename, "status": status, "deletions": deletions, "sha": sha}
+def _file(filename, status="modified", deletions=0, sha="s1", additions=1, patch=None):
+    return {"filename": filename, "status": status, "additions": additions,
+            "deletions": deletions, "sha": sha, "patch": patch}
 
 
 class TestDataGuard:
@@ -586,6 +587,34 @@ class TestDataGuard:
     def test_editing_or_removing_translations_is_flagged(self, status, deletions):
         files = [_file("translations/messages.fr.xlf", status=status, deletions=deletions)]
         assert flagged_files(files, _DEFAULT_DATA_GUARD)[0]["label"] == "translation change"
+
+    @pytest.mark.parametrize("path", [
+        "lang/fr.json", "locales/fr.json", "locale/fr/LC_MESSAGES/app.po", "i18n/fr.yaml",
+        "resources/lang/fr/cart.php",
+    ])
+    def test_translation_folders_at_any_depth_are_guarded(self, path):
+        assert flagged_files([_file(path, deletions=1)], _DEFAULT_DATA_GUARD)
+
+    def test_binary_translation_catalog_is_flagged(self):
+        # GitHub reports a binary change with no added and no deleted line.
+        files = [_file("locale/fr/LC_MESSAGES/app.mo", additions=0, deletions=0)]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD)
+
+    JSON_APPEND = '@@ -2,3 +2,4 @@\n   "a": "A",\n-  "b": "B"\n+  "b": "B",\n+  "c": "C"\n }'
+    JSON_EDIT = '@@ -2,3 +2,3 @@\n   "a": "A",\n-  "b": "B"\n+  "b": "changed",\n }'
+
+    def test_key_appended_to_a_json_catalog_is_tolerated(self):
+        files = [_file("lang/fr.json", additions=2, deletions=1, patch=self.JSON_APPEND)]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD) == []
+
+    @pytest.mark.parametrize("path,patch", [
+        ("lang/fr.json", JSON_EDIT),      # an existing value changed
+        ("lang/fr.json", None),           # patch too large for GitHub to send
+        ("lang/fr.yaml", JSON_APPEND),    # a trailing comma is a new value outside JSON
+    ])
+    def test_other_deletions_in_a_catalog_are_flagged(self, path, patch):
+        files = [_file(path, additions=2, deletions=1, patch=patch)]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD)
 
     def test_migration_renamed_out_of_its_folder_is_flagged(self):
         moved = dict(_file("src/Legacy/Version1.php", status="renamed"),

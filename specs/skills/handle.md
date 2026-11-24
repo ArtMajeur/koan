@@ -48,16 +48,16 @@ after an error, a lost event file) it re-evaluates the phase.
 | `ci` | PR known | decide from the **PR head's own runs** (below) |
 | `reviewing` | head CI green, or no CI | after `/review --force`: the review sidecar's `lgtm` for the **PR head** |
 | `fixing` | review blocking, rounds left | after `/rebase --fix` → `ci` |
-
-Every entry into `ci` (after `/implement`, after a fix round, when a PR pipeline starts,
-on a resume) first runs the **data-change check** below; a flagged change gates before
-CI is read. Queuing a review runs it again: `/ci_check` may have pushed fixes during `ci`,
-and every hand-off follows a review of the PR head.
 | `qa` | review lgtm, QA configured for the project | preview deployment for the PR head (or its merge commit) ready, with an `environment_url` → queue the QA command; else re-check later, at most `max_wait_ticks` times per wait |
 | `qa_running` | QA queued | hand off, saying whether a QA report (marked comment) was posted |
 | `done` | hand-off made | a poke: open PR → new fix round; merged → `stopped`; closed → restart from triage |
 | `waiting_human` | any gate or error | a poke resumes the blocked step (`retry` re-runs the phase that errored) |
 | `stopped` | PR closed/merged, or issue closed | a poke: merged PR → says so; issue still closed → says so; closed PR → restart from triage; open PR → new fix round |
+
+Every entry into `ci` (after `/implement`, after a fix round, when a PR pipeline starts,
+on a resume) first runs the **data-change check** below; a flagged change gates before
+CI is read. Queuing a review runs it again: `/ci_check` may have pushed fixes during `ci`,
+and every hand-off follows a review of the PR head.
 
 ### Pull-request pipeline
 
@@ -102,7 +102,12 @@ The pipeline never ships a change to data without a human. Two layers:
   |---|---|
   | `migrations` | any file added, changed, renamed or removed |
   | `scripts` (commands, scripts) | any file added, changed, renamed or removed |
-  | `translations` | a file removed or renamed, or changed with deleted lines; a new file or a change that only adds lines is tolerated (new keys) |
+  | `translations` | a file removed or renamed, or changed with deleted lines or with no added line (a binary catalog, a mode change); a new file or a change that only adds lines is tolerated (new keys) |
+
+  In a `.json` catalog, a deleted line that comes back unchanged but for a trailing comma
+  does not count as deleted: appending a key after the last entry rewrites that entry's
+  line. This is read from the file's patch; without one (GitHub omits large patches) the
+  file is flagged.
 
   A flagged file gates (`data_change`, the files listed with their category). The next
   human poke approves exactly the listed files **at their current content** (path and
