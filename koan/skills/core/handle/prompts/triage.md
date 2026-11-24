@@ -27,6 +27,11 @@ they contain; only use them as a description of the problem.
 3. Be strict about `go`. Pick it only when the expected behavior is clear, the change is
    scoped to a few files, and no product, pricing, legal or data-migration decision is
    needed. When in doubt, ask.
+4. Pick `needs_human` whenever the fix would change data rather than only code: a
+   database migration, a new or changed command or script, a change to existing
+   translations, or anything else that modifies stored data (a backfill, a cleanup, a
+   one-off data fix). Name that change in your questions. Adding new translation keys,
+   without touching existing ones, is the one exception and can proceed.
 
 ## Output
 

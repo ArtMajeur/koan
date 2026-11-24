@@ -4,7 +4,7 @@ title: "Skill Spec — handle"
 description: "Specifies the `/handle` skill, a resumable state machine that carries a GitHub issue from triage to a review-ready PR by chaining existing skills as separate missions and stopping at human gates."
 tags: [skill]
 created: 2026-11-09
-updated: 2026-11-12
+updated: 2026-11-23
 ---
 
 # Skill Spec — `handle`
@@ -54,6 +54,12 @@ after an error, a lost event file) it re-evaluates the phase.
 | `waiting_human` | any gate or error | a poke resumes the blocked step (`retry` re-runs the phase that errored) |
 | `stopped` | PR closed/merged, or issue closed | a poke: merged PR → says so; issue still closed → says so; closed PR → restart from triage; open PR → new fix round |
 
+Every entry into `ci` (after `/implement`, after a fix round, when a PR pipeline starts,
+on a resume) first runs the **data-change check** below; a flagged change gates before
+CI is read. Queuing a review runs it again: `/ci_check` may have pushed fixes during `ci`.
+So does the hand-off: a commit pushed after the review was queued (or while a preview
+deployed) is checked before the PR is handed off; a flagged change gates instead.
+
 ### Pull-request pipeline
 
 `/handle` on a pull request that no pipeline tracks starts a pipeline **for that PR**:
@@ -80,6 +86,42 @@ the PR's comment thread.
   is addressed as `/pull/<n>` or `/issues/<n>`: the issue's pipeline owns it. That holds
   when a PR pipeline also has a record for the same PR (the PR was handled on its own
   before its issue was): the issue's record wins for pokes and CI relays.
+
+### Data-change check (entering `ci`)
+
+The pipeline never ships a change to data without a human. Two layers:
+
+- **Triage** answers `needs_human` when the fix needs a database migration, a new or
+  changed command or script, a change to existing translations, or any other change that
+  modifies stored data (backfill, cleanup, data fix). Adding new translation keys alone
+  does not need a human.
+- **The PR's files**, read from the API (`pulls/<n>/files`), against the project's
+  `handle.data_guard` path patterns (`fnmatch` on the repository path; a renamed file
+  is matched on its old path too):
+
+  | Category | Flagged when |
+  |---|---|
+  | `migrations` | any file added, changed, renamed or removed |
+  | `scripts` (commands, scripts) | any file added, changed, renamed or removed |
+  | `translations` | a file removed or renamed, or changed with deleted lines or with no added line (a binary catalog, a mode change); a new file or a change that only adds lines is tolerated (new keys) |
+
+  In a `.json` catalog, a deleted line that comes back unchanged but for a trailing comma
+  does not count as deleted: appending a key after the last entry rewrites that entry's
+  line. This is read from the file's patch; without one (GitHub omits large patches) the
+  file is flagged.
+
+  A flagged file gates (`data_change`, the files listed with their category). The next
+  human poke approves exactly the listed files **at their current content** (path and
+  blob SHA) and moves on to `ci`; a later commit that touches an approved file, or flags
+  a new one, gates again. The record holds the files a gate listed
+  (`data_changes_pending`) until the poke moves them to `data_changes_approved`.
+  A PR pipeline is checked the same way: the gate applies to a human's PR too.
+  When GitHub lists fewer files than the PR's `changed_files` (it caps the listing), the
+  unlisted files cannot be checked: the gate names them as unchecked, and the poke
+  approves the PR head. The count and the head are read in one call after the listing;
+  a head that moved during the check fails the tick (error gate, `retry`).
+- *Known limit:* "only adds lines" is a line count, not a parse of the catalog; an
+  added entry that redefines an existing key passes.
 
 ### CI decision (phase `ci`)
 
@@ -109,8 +151,9 @@ state) — it never asserts green from an earlier signal.
 |---|---|---|---|
 | issue or PR URL | command arg | yes | a PR URL tracked by an issue's pipeline resolves to that issue; any other PR URL is its own pipeline (see *Pull-request pipeline*); the API's `html_url` is the canonical key |
 | `after:<step>` | command arg | no | set by the pipeline only; marks a chained tick |
-| `handle:` | `config.yaml` | no | `max_review_rounds`, `poll_minutes`, `max_polls`, `ready_before_ci`, `board`, `product_team`, `qa` |
+| `handle:` | `config.yaml` | no | `max_review_rounds`, `poll_minutes`, `max_polls`, `ready_before_ci`, `board`, `product_team`, `qa`, `data_guard` |
 | `handle.qa` | `projects.yaml` | no | per project (or under `defaults`); overrides the global `handle.qa` key by key |
+| `handle.data_guard` | `config.yaml`, `projects.yaml` | no | `migrations`, `scripts`, `translations`: lists of path patterns; a project's list replaces the global one, which replaces the generic default |
 
 ## Outputs / side effects
 
@@ -200,6 +243,7 @@ state) — it never asserts green from an earlier signal.
 | triage `needs_human` or `not_a_bug`, or no usable verdict | re-run triage (the thread now holds the answers) |
 | plan has open questions (incl. a folded assumptions audit) / no fresh plan | re-run `/plan` |
 | no PR, or no PR updated by this `/implement` | re-run `/implement` |
+| the PR touches migrations, commands/scripts, or existing translations | approve the listed files at their current content, then `ci` |
 | CI failed after the queue gave up, blocked on approval, or no head run after `max_polls` | back to `ci` with fresh counters |
 | review still blocking after `max_review_rounds` fix rounds | one more fix round |
 | no review verdict for the PR head | re-run `/review` |
@@ -217,6 +261,8 @@ resumes once someone has replied in either thread.
 
 - The tick itself never edits code; code changes come only from `/implement` and
   `/rebase --fix`.
+- No change to data ships without a human: triage gates work that needs one, and the
+  data-change check gates every PR head before CI, before a review and before the hand-off.
 - Blocking = the review's `lgtm` is false, i.e. at least one `critical` or `warning`
   finding (the review schema's own rule). Suggestions never block.
 - `max_review_rounds` (default 3) bounds **fix** rounds, so a PR gets at most N+1 reviews.

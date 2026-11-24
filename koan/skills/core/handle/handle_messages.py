@@ -32,6 +32,12 @@ _TEMPLATES = {
             "{mention}The implementation did not open or update a pull request. "
             "Comment `@{bot} handle` to try again."
         ),
+        "data_change": (
+            "{mention}{pr_url} changes data, and I don't ship that without a human:\n\n"
+            "{files}\n\nCheck these files (or take over the change). Comment "
+            "`@{bot} handle` to approve them as they are now and continue; any later "
+            "edit to them will stop me again."
+        ),
         "ci_blocked": (
             "{mention}CI on {pr_url} is stuck (`{outcome}`) and I can't get it further "
             "on my own. Take a look, then comment `@{bot} handle` to resume."
@@ -109,6 +115,12 @@ _TEMPLATES = {
         "implement_no_pr": (
             "{mention}L'implémentation n'a ni ouvert ni mis à jour de pull request. "
             "Commentez `@{bot} handle` pour réessayer."
+        ),
+        "data_change": (
+            "{mention}{pr_url} modifie des données, et je ne livre pas ça sans un humain :\n\n"
+            "{files}\n\nVérifiez ces fichiers (ou reprenez la main). Commentez "
+            "`@{bot} handle` pour les approuver dans leur état actuel et continuer ; toute "
+            "modification ultérieure de ces fichiers m'arrêtera à nouveau."
         ),
         "ci_blocked": (
             "{mention}La CI de {pr_url} est bloquée (`{outcome}`) et je ne peux pas aller "

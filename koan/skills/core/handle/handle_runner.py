@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from app import handle_state
-from skills.core.handle import handle_ci
+from skills.core.handle import handle_ci, handle_data_guard
 from skills.core.handle import handle_github as gh
 from skills.core.handle.handle_messages import render
 from skills.core.handle.handle_parse import (
@@ -54,6 +54,7 @@ _GATE_NOTES = {
     "plan_questions": "The plan has open questions",
     "plan_missing": "No fresh plan was produced",
     "implement_no_pr": "The implementation opened no pull request",
+    "data_change": "The pull request changes data and needs a human: {pr_url}",
     "ci_blocked": "CI is stuck ({outcome}): {pr_url}",
     "review_exhausted": "Review still blocking after {rounds} fix rounds: {pr_url}",
     "review_missing": "The review left no verdict for the latest commit: {pr_url}",
@@ -425,6 +426,9 @@ def _after_implement(tick: Tick) -> Result:
 
 
 def _await_ci(tick: Tick) -> Result:
+    flagged = _unapproved_data_changes(tick)
+    if flagged:
+        return _gate_data_changes(tick, flagged)
     if tick.config["ready_before_ci"] and _pr(tick).get("isDraft"):
         # Some CIs skip draft PRs: without this the loop would review and fix
         # a PR whose CI never ran.
@@ -433,6 +437,35 @@ def _await_ci(tick: Tick) -> Result:
     tick.save(phase="ci", ci_outcome=None, ci_polls=0, ci_empty_checks=0,
               phase_started_at=time.time(), resume=None)
     return _after_ci(tick)
+
+
+def _unapproved_data_changes(tick: Tick) -> List[dict]:
+    """PR files touching data (migrations, scripts, existing translations) not yet approved."""
+    head = _pr(tick)["headRefOid"]
+    files = gh.pr_files(tick.owner, tick.repo, tick.pr_number)
+    total, head_after = gh.pr_changed_files(tick.owner, tick.repo, tick.pr_number)
+    if head_after != head:
+        # A push landed during the check: the listing may mix two heads, so it
+        # proves nothing. Fail closed; the retry reads the new head.
+        raise RuntimeError(f"PR head moved during the data-change check ({head} → {head_after})")
+    approved = set(tick.record.get("data_changes_approved") or ())
+    flagged = handle_data_guard.flagged_files(files, tick.config["data_guard"])
+    flagged += handle_data_guard.truncated_listing(len(files), total, head)
+    return [f for f in flagged if handle_data_guard.approval_key(f) not in approved]
+
+
+def _gate_data_changes(tick: Tick, flagged: List[dict]) -> Result:
+    tick.save(data_changes_pending=[handle_data_guard.approval_key(f) for f in flagged])
+    files = "\n".join(f"- `{f['filename']}` ({f['label']})" for f in flagged)
+    return _gate(tick, "data_change", "data_change", pr_url=tick.pr_url, files=files)
+
+
+def _approve_data_changes(tick: Tick) -> Result:
+    """The poke after a data-change gate approves the listed files at their gated content."""
+    approved = list(tick.record.get("data_changes_approved") or [])
+    approved += tick.record.get("data_changes_pending") or []
+    tick.save(data_changes_approved=approved, data_changes_pending=[])
+    return _await_ci(tick)
 
 
 def _after_ci(tick: Tick) -> Result:
@@ -487,6 +520,11 @@ def _poll_ci(tick: Tick, state: str) -> Result:
 
 
 def _queue_review(tick: Tick) -> Result:
+    # /ci_check may have pushed fixes since the check on entering ci; every
+    # hand-off follows a review of the PR head, so checking here covers them.
+    flagged = _unapproved_data_changes(tick)
+    if flagged:
+        return _gate_data_changes(tick, flagged)
     return _queue(tick, f"/review {tick.pr_url} --force", "review", "reviewing")
 
 
@@ -568,6 +606,11 @@ def _after_qa(tick: Tick) -> Result:
 
 
 def _finish(tick: Tick, qa_note: str) -> Result:
+    # A commit pushed after the review was queued, or during the preview wait,
+    # has not been through the check.
+    flagged = _unapproved_data_changes(tick)
+    if flagged:
+        return _gate_data_changes(tick, flagged)
     pr_url = tick.pr_url
     gh.hand_off_pr(tick.owner, tick.repo, tick.pr_number, _reviewer(tick),
                    is_draft=bool(_pr(tick).get("isDraft")))
@@ -807,6 +850,7 @@ _RESUME: Dict[str, Callable[[Tick], Result]] = {
     "plan": _queue_plan,
     "implement": _queue_implement,
     "ci": _await_ci,
+    "data_change": _approve_data_changes,
     "review": _queue_review,
     "fix": _queue_fix,
 }

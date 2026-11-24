@@ -210,6 +210,31 @@ def pr_info(owner: str, repo: str, number: str) -> dict:
     return data
 
 
+def pr_files(owner: str, repo: str, number: str) -> List[dict]:
+    """The PR's changed files against its base.
+
+    Each is ``{filename, previous_filename, status, additions, deletions, sha,
+    patch}``; the patch is kept for ``.json`` files only (the data guard reads
+    no other). GitHub lists at most 3000 files: compare with ``pr_changed_files``.
+    """
+    raw = run_gh(
+        "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/files?per_page=100",
+        "--jq", ".[] | {filename, previous_filename, status, additions, deletions, sha, "
+                'patch: (if (.filename | endswith(".json")) then .patch else null end)}',
+    )
+    return [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
+def pr_changed_files(owner: str, repo: str, number: str) -> Tuple[int, str]:
+    """``(changed_files, head sha)`` read together: how many files the PR changes
+    (including any the file listing leaves out) at which head."""
+    data = _json(api(f"repos/{owner}/{repo}/pulls/{number}",
+                     jq="{changed_files, head: .head.sha}"))
+    if not data:
+        raise RuntimeError(f"empty response for PR {owner}/{repo}#{number}")
+    return int(data.get("changed_files") or 0), data.get("head") or ""
+
+
 def mark_ready(owner: str, repo: str, number: str) -> None:
     """Take the PR out of draft; raises, because CI may depend on it."""
     run_gh("pr", "ready", number, "--repo", f"{owner}/{repo}")

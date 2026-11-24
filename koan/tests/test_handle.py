@@ -9,7 +9,9 @@ from unittest.mock import patch
 import pytest
 
 from app import handle_state
+from app.config import _DEFAULT_DATA_GUARD
 from skills.core.handle import handle_ci, handle_runner
+from skills.core.handle.handle_data_guard import flagged_files
 from skills.core.handle.handle_parse import (
     open_questions,
     parse_triage,
@@ -64,13 +66,17 @@ class FakeGitHub:
         self.assigned = False
         self.fail_comments_with = None
         self.cross_repository = False
+        self.files = []
+        self.changed_files = None
+        self.head_after_listing = None
 
     def install(self, enter):
         gh = handle_runner.gh
         for name in ("fetch_issue", "fetch_comments", "fetch_review_activity",
                      "post_comment", "assign_self",
                      "find_open_pr", "pr_info", "hand_off_pr", "preview_status",
-                     "merge_commit_sha", "is_team_member", "move_on_board", "is_authorized"):
+                     "merge_commit_sha", "is_team_member", "move_on_board", "is_authorized",
+                     "pr_files", "pr_changed_files"):
             enter(patch.object(gh, name, getattr(self, name)))
         enter(patch.object(handle_ci, "ci_at_head", lambda branch, repo, head: self.ci_state))
 
@@ -98,6 +104,13 @@ class FakeGitHub:
     def pr_info(self, owner, repo, number):
         return {"state": self.pr_state, "headRefOid": HEAD, "isDraft": True, "url": PR,
                 "headRefName": "feature/x", "isCrossRepository": self.cross_repository}
+
+    def pr_files(self, owner, repo, number):
+        return [dict(f) for f in self.files]
+
+    def pr_changed_files(self, owner, repo, number):
+        total = self.changed_files if self.changed_files is not None else len(self.files)
+        return total, self.head_after_listing or HEAD
 
     def merge_commit_sha(self, owner, repo, number):
         return "merge456"
@@ -131,6 +144,7 @@ def pipeline(tmp_path, monkeypatch):
         "max_review_rounds": 3, "poll_minutes": 5, "max_polls": 2, "ready_before_ci": False,
         "board": {}, "product_team": "",
         "qa": {"command": "", "preview_environment": "", "max_wait_ticks": 2, "wait_minutes": 5},
+        "data_guard": _DEFAULT_DATA_GUARD,
     }
     triage = {"output": _triage_output("go")}
     ci_check = {"enabled": True}
@@ -550,6 +564,137 @@ class TestImplement:
         assert pipeline.record()["resume"] == "implement"
 
 
+def _file(filename, status="modified", deletions=0, sha="s1", additions=1, patch=None):
+    return {"filename": filename, "status": status, "additions": additions,
+            "deletions": deletions, "sha": sha, "patch": patch}
+
+
+class TestDataGuard:
+    @pytest.mark.parametrize("path", [
+        "migrations/Version20261105132600.php", "app/migrations/0004_cart.py",
+        "db/migrate/20261101_add_total.rb", "src/Command/CartFixCommand.php",
+        "bin/console", "scripts/backfill.py", "sql/fix_totals.sql",
+    ])
+    def test_migrations_and_scripts_are_flagged_on_any_change(self, path):
+        assert flagged_files([_file(path, status="added")], _DEFAULT_DATA_GUARD)
+
+    def test_new_translation_keys_are_tolerated(self):
+        files = [_file("translations/messages.fr.xlf", deletions=0),
+                 _file("translations/cart.de.xlf", status="added")]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD) == []
+
+    @pytest.mark.parametrize("status,deletions", [("modified", 2), ("removed", 10), ("renamed", 0)])
+    def test_editing_or_removing_translations_is_flagged(self, status, deletions):
+        files = [_file("translations/messages.fr.xlf", status=status, deletions=deletions)]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD)[0]["label"] == "translation change"
+
+    @pytest.mark.parametrize("path", [
+        "lang/fr.json", "locales/fr.json", "locale/fr/LC_MESSAGES/app.po", "i18n/fr.yaml",
+        "resources/lang/fr/cart.php",
+    ])
+    def test_translation_folders_at_any_depth_are_guarded(self, path):
+        assert flagged_files([_file(path, deletions=1)], _DEFAULT_DATA_GUARD)
+
+    def test_binary_translation_catalog_is_flagged(self):
+        # GitHub reports a binary change with no added and no deleted line.
+        files = [_file("locale/fr/LC_MESSAGES/app.mo", additions=0, deletions=0)]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD)
+
+    JSON_APPEND = '@@ -2,3 +2,4 @@\n   "a": "A",\n-  "b": "B"\n+  "b": "B",\n+  "c": "C"\n }'
+    JSON_EDIT = '@@ -2,3 +2,3 @@\n   "a": "A",\n-  "b": "B"\n+  "b": "changed",\n }'
+
+    def test_key_appended_to_a_json_catalog_is_tolerated(self):
+        files = [_file("lang/fr.json", additions=2, deletions=1, patch=self.JSON_APPEND)]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD) == []
+
+    @pytest.mark.parametrize("path,patch", [
+        ("lang/fr.json", JSON_EDIT),      # an existing value changed
+        ("lang/fr.json", None),           # patch too large for GitHub to send
+        ("lang/fr.yaml", JSON_APPEND),    # a trailing comma is a new value outside JSON
+    ])
+    def test_other_deletions_in_a_catalog_are_flagged(self, path, patch):
+        files = [_file(path, additions=2, deletions=1, patch=patch)]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD)
+
+    def test_migration_renamed_out_of_its_folder_is_flagged(self):
+        moved = dict(_file("src/Legacy/Version1.php", status="renamed"),
+                     previous_filename="migrations/Version1.php")
+        assert flagged_files([moved], _DEFAULT_DATA_GUARD)[0]["label"] == "migration"
+
+    def test_plain_code_is_not_flagged(self):
+        files = [_file("src/Controller/CartController.php", deletions=5),
+                 _file("tests/unit/Command/CartFixCommandTest.php", status="added")]
+        assert flagged_files(files, _DEFAULT_DATA_GUARD) == []
+
+
+class TestDataChangeGate:
+    MIGRATION = "migrations/Version20261123000000.php"
+
+    def _implemented(self, pipeline, *files):
+        pipeline.seed(phase="implementing", phase_started_at=100.0)
+        pipeline.github.open_pr = {"url": PR, "number": 12, "headRefOid": HEAD, "updated_at": 200.0}
+        pipeline.github.files = list(files)
+        pipeline.github.ci_state = "pending"
+        pipeline.run(after="implement")
+
+    def test_migration_gates_before_ci(self, pipeline):
+        self._implemented(pipeline, _file(self.MIGRATION, status="added"))
+        record = pipeline.record()
+        assert (record["phase"], record["resume"]) == ("waiting_human", "data_change")
+        assert f"`{self.MIGRATION}` (migration)" in pipeline.github.posted[-1]
+        assert "## CI" not in pipeline.missions()
+        assert pipeline.outcome.milestone == "gate"
+
+    def test_added_translation_keys_go_on_to_ci(self, pipeline):
+        self._implemented(pipeline, _file("translations/messages.fr.xlf"))
+        assert pipeline.record()["phase"] == "ci"
+
+    def test_poke_approves_the_files_and_continues(self, pipeline):
+        self._implemented(pipeline, _file(self.MIGRATION, status="added"))
+        pipeline.github.comments.append(
+            {"author": "dev", "body": f"Migration checked. @{BOT} handle", "created_at": time.time() + 5})
+        pipeline.run()
+        assert pipeline.record()["phase"] == "ci"
+
+    def test_later_edit_to_an_approved_file_gates_again(self, pipeline):
+        self._implemented(pipeline, _file(self.MIGRATION, status="added"))
+        pipeline.github.comments.append(
+            {"author": "dev", "body": f"@{BOT} handle", "created_at": time.time() + 5})
+        pipeline.run()
+        # A fix round rewrites the migration: the approval was for the old content.
+        pipeline.seed(phase="fixing", phase_started_at=time.time())
+        pipeline.github.files = [_file(self.MIGRATION, status="added", sha="s2")]
+        pipeline.run(after="fix")
+        assert pipeline.record()["resume"] == "data_change"
+
+    def test_truncated_file_listing_gates(self, pipeline):
+        pipeline.github.changed_files = 3500
+        self._implemented(pipeline, _file("src/Cart.php"))
+        assert pipeline.record()["resume"] == "data_change"
+        assert "3499 of 3500 files not listed" in pipeline.github.posted[-1]
+
+    def test_head_moving_during_the_check_fails_closed(self, pipeline):
+        pipeline.github.head_after_listing = "def456"
+        self._implemented(pipeline, _file("src/Cart.php"))
+        record = pipeline.record()
+        assert (record["phase"], record["resume"]) == ("waiting_human", "retry")
+        assert "## CI" not in pipeline.missions()
+
+    def test_ci_fix_that_adds_a_migration_gates_before_review(self, pipeline):
+        pipeline.seed(phase="ci", pr_url=PR, pr_number="12", branch="koan/implement-7",
+                      ci_polls=0, ci_empty_checks=0)
+        pipeline.github.files = [_file(self.MIGRATION, status="added")]
+        pipeline.run(after="ci")
+        assert pipeline.record()["resume"] == "data_change"
+        assert not any("/review" in m for m in pipeline.pending())
+
+    def test_pull_request_pipeline_is_checked_too(self, pipeline):
+        pipeline.github.issue.update(html_url=PR, is_pr=True)
+        pipeline.github.files = [_file("src/Command/CartFixCommand.php", status="added")]
+        pipeline.run(url=PR)
+        assert handle_state.load_record(pipeline.instance_dir, PR)["resume"] == "data_change"
+
+
 # -- CI ---------------------------------------------------------------------------
 
 
@@ -710,6 +855,14 @@ class TestReviewLoop:
         assert pipeline.record()["phase"] == "done"
         assert pipeline.github.handed_off == [("12", "dev")]
         assert "CI is green" in pipeline.github.posted[0]
+
+    def test_data_change_pushed_after_the_review_gates_the_hand_off(self, pipeline):
+        self._seed_review(pipeline)
+        _write_sidecar(pipeline.instance_dir, True, time.time())
+        pipeline.github.files = [_file("migrations/Version1.php", status="added")]
+        pipeline.run(after="review")
+        assert pipeline.record()["resume"] == "data_change"
+        assert pipeline.github.handed_off == []
 
     def test_hand_off_never_claims_green_without_ci(self, pipeline):
         self._seed_review(pipeline)
@@ -995,6 +1148,15 @@ class TestProjectQaConfig:
         assert self._qa("mobile", global_handle)["command"] == ""
         assert self._qa("mobile", global_handle)["wait_minutes"] == 9
         assert self._qa("shop", global_handle)["command"] == "/my_team.qa"
+
+    def test_project_data_guard_replaces_the_default_per_category(self, projects_yaml):
+        from app.config import get_handle_config
+
+        projects_yaml({"shop": {"handle": {"data_guard": {"scripts": ["tools/*"]}}}})
+        with patch("app.utils.load_config", return_value={"handle": {}}):
+            guard = get_handle_config("shop")["data_guard"]
+        assert guard["scripts"] == ["tools/*"]
+        assert guard["migrations"] == _DEFAULT_DATA_GUARD["migrations"]
 
     def test_defaults_apply_to_every_project(self, projects_yaml):
         projects_yaml({"shop": {}}, defaults={"handle": {"qa": self.QA}})
