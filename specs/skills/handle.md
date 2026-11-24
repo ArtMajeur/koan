@@ -56,8 +56,9 @@ after an error, a lost event file) it re-evaluates the phase.
 
 Every entry into `ci` (after `/implement`, after a fix round, when a PR pipeline starts,
 on a resume) first runs the **data-change check** below; a flagged change gates before
-CI is read. Queuing a review runs it again: `/ci_check` may have pushed fixes during `ci`,
-and every hand-off follows a review of the PR head.
+CI is read. Queuing a review runs it again: `/ci_check` may have pushed fixes during `ci`.
+So does the hand-off: a commit pushed after the review was queued (or while a preview
+deployed) is checked before the PR is handed off; a flagged change gates instead.
 
 ### Pull-request pipeline
 
@@ -112,7 +113,8 @@ The pipeline never ships a change to data without a human. Two layers:
   A flagged file gates (`data_change`, the files listed with their category). The next
   human poke approves exactly the listed files **at their current content** (path and
   blob SHA) and moves on to `ci`; a later commit that touches an approved file, or flags
-  a new one, gates again. The approval is stored in the record (`data_changes_approved`).
+  a new one, gates again. The record holds the files a gate listed
+  (`data_changes_pending`) until the poke moves them to `data_changes_approved`.
   A PR pipeline is checked the same way: the gate applies to a human's PR too.
   When GitHub lists fewer files than the PR's `changed_files` (it caps the listing), the
   unlisted files cannot be checked: the gate names them as unchecked, and the poke
@@ -260,7 +262,7 @@ resumes once someone has replied in either thread.
 - The tick itself never edits code; code changes come only from `/implement` and
   `/rebase --fix`.
 - No change to data ships without a human: triage gates work that needs one, and the
-  data-change check gates every PR head before CI.
+  data-change check gates every PR head before CI, before a review and before the hand-off.
 - Blocking = the review's `lgtm` is false, i.e. at least one `critical` or `warning`
   finding (the review schema's own rule). Suggestions never block.
 - `max_review_rounds` (default 3) bounds **fix** rounds, so a PR gets at most N+1 reviews.

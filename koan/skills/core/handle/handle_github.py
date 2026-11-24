@@ -218,7 +218,7 @@ def pr_files(owner: str, repo: str, number: str) -> List[dict]:
     no other). GitHub lists at most 3000 files: compare with ``pr_changed_files``.
     """
     raw = run_gh(
-        "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/files",
+        "api", "--paginate", f"repos/{owner}/{repo}/pulls/{number}/files?per_page=100",
         "--jq", ".[] | {filename, previous_filename, status, additions, deletions, sha, "
                 'patch: (if (.filename | endswith(".json")) then .patch else null end)}',
     )

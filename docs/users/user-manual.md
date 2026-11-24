@@ -610,12 +610,17 @@ handle:
     wait_minutes: 5                  # re-check interval while the preview deploys
     max_wait_ticks: 5
   data_guard:                        # PR paths that need a human before CI (fnmatch patterns)
-    migrations: ["migrations/*", "*/migrations/*", "db/migrate/*", "*.sql"]
-    scripts: ["bin/*", "scripts/*", "src/Command/*"]
-    translations: ["translations/*", "*/locales/*"]   # only edits/removals stop; new keys pass
+    # Example lists for one layout, narrower than the defaults they replace.
+    migrations: ["migrations/*", "*.sql"]
+    scripts: ["bin/*", "src/Command/*"]
+    translations: ["translations/*"]   # only edits/removals stop; new keys pass
 ```
 
-`data_guard` has defaults covering common framework layouts; a list you set replaces that category's default. It can also be set per project in `projects.yaml`, where a project's list replaces the global one.
+`data_guard` needs no configuration: its defaults cover common framework layouts, and a list you set **replaces** that category's default, so leave a category out unless your layout differs. It can also be set per project in `projects.yaml`, where a project's list replaces the global one. The defaults:
+
+- `migrations`: a `migrations/` or `Migrations/` folder at any depth, `db/migrate/` at the root, and any `*.sql` file
+- `scripts`: `bin/`, `scripts/` and `app/Console/Commands/` at the root, `src/Command/` and `management/commands/` at any depth
+- `translations`: a `translations/`, `locale/`, `locales/`, `i18n/` or `lang/` folder at any depth
 
 QA needs a preview deployment, which only some repositories have. `handle.qa` can therefore be set per project in `projects.yaml` (under a project, or under `defaults`), where it overrides the global one key by key. To run QA on one project only, leave `qa` out of `config.yaml` and put it on that project; the others hand the PR off right after the review, without waiting for a preview:
 

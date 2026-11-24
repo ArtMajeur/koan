@@ -856,6 +856,14 @@ class TestReviewLoop:
         assert pipeline.github.handed_off == [("12", "dev")]
         assert "CI is green" in pipeline.github.posted[0]
 
+    def test_data_change_pushed_after_the_review_gates_the_hand_off(self, pipeline):
+        self._seed_review(pipeline)
+        _write_sidecar(pipeline.instance_dir, True, time.time())
+        pipeline.github.files = [_file("migrations/Version1.php", status="added")]
+        pipeline.run(after="review")
+        assert pipeline.record()["resume"] == "data_change"
+        assert pipeline.github.handed_off == []
+
     def test_hand_off_never_claims_green_without_ci(self, pipeline):
         self._seed_review(pipeline)
         _write_sidecar(pipeline.instance_dir, True, time.time())

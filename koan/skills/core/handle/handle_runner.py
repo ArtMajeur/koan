@@ -606,6 +606,11 @@ def _after_qa(tick: Tick) -> Result:
 
 
 def _finish(tick: Tick, qa_note: str) -> Result:
+    # A commit pushed after the review was queued, or during the preview wait,
+    # has not been through the check.
+    flagged = _unapproved_data_changes(tick)
+    if flagged:
+        return _gate_data_changes(tick, flagged)
     pr_url = tick.pr_url
     gh.hand_off_pr(tick.owner, tick.repo, tick.pr_number, _reviewer(tick),
                    is_draft=bool(_pr(tick).get("isDraft")))
