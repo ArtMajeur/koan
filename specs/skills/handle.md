@@ -132,14 +132,23 @@ fails instead (error gate), since "none" would there mean "start over".
   tick, never a human poke. It acts only on the PR's own record, and only when that
   record names an issue as `parent`: it starts a PR that has no phase yet and resumes one
   parked at a gate other than a data change. In any other state, or when the tick reaches
-  another record (an issue took the PR as its own in the meantime), it is ignored.
+  another record (an issue took the PR as its own in the meantime), it is ignored. A PR
+  it starts for an issue with no requester falls back to the PR's author, as a human
+  poke on the PR would; resuming an error gate re-runs the phase that failed.
   Delegation queues it for a PR with no pipeline yet and for one parked at a gate; a PR
   already moving is left alone, and one already handed off is only reported: a new fix
   round is asked on the PR itself. A PR whose pipeline stopped (it was closed) and that
   is open again starts afresh.
 - **The issue's list only grows or settles.** A PR the issue owns stays in `prs` until its
   pipeline is done or stopped, even when GitHub stops listing it as closing the issue
-  (the closing keyword was edited out): the hand-off waits for it.
+  (the closing keyword was edited out): the hand-off waits for it. A PR that left the
+  listing because it was closed or merged while its pipeline was parked (a gate gets no
+  tick of its own) is given a tick on the next poke of the issue: its pipeline stops,
+  and stops holding the issue.
+- **Ownership is not released.** A PR stays with its owner while that owner's record
+  exists, also when the owning issue was closed or the closing keyword moved to another
+  issue. The other issue keeps naming the owner; reopening or poking the owner (or
+  handling the PR from there) is the way out.
 - **A data change is never approved from the issue.** A PR parked at a `data_change` gate
   is reported, not poked, and a reply on the issue does not reopen that gate: the
   approval is a `@<bot> handle` on the PR, by someone who looked at its files.

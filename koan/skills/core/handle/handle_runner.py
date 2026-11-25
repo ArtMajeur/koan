@@ -594,6 +594,12 @@ def _after_implement(tick: Tick) -> Result:
             if gh.same_login(p["author"], tick.bot) and p["updated_at"] >= since
         ]
         return _adopt_linked_prs(tick, opened) or _gate(tick, "implement_no_pr", "implement")
+    if handle_state.pr_owner(tick.instance_dir, pr["url"]) not in ("", tick.issue_url):
+        # Somebody drives this PR already (it was poked on its own, or another
+        # issue it closes took it): one owner per PR, here as everywhere.
+        claimed = {"url": pr["url"], "owner": tick.owner, "repo": tick.repo,
+                   "number": str(pr["number"]), "project": tick.project_name}
+        return _delegate(tick, [claimed], []) or _gate(tick, "implement_no_pr", "implement")
     tick.save(pr_url=pr["url"], pr_number=str(pr["number"]), branch=branch, review_round=0)
     return _await_ci(tick)
 
@@ -698,19 +704,39 @@ def _left_to_other_issues(tick: Tick, plans: List[dict]) -> Optional[Result]:
 def _unlisted_members(tick: Tick, known: List[str], listed: set) -> List[dict]:
     """PRs the issue owns that GitHub no longer lists as closing it, still under way.
 
-    The closing keyword may have been edited out of an open PR: dropping it
-    here would hand the issue off without it.
+    An open one had its closing keyword edited out: dropping it here would hand
+    the issue off without it. One that was closed or merged while parked (a
+    gate gets no tick) is given a tick, so that its pipeline stops and stops
+    holding the issue.
     """
+    from app.github_url_parser import parse_github_url
+
     plans = []
     for url in known:
         record = handle_state.load_record(tick.instance_dir, url)
         phase = record.get("phase", "")
         if url in listed or record.get("parent") != tick.issue_url or phase in ("done", "stopped"):
             continue
-        plans.append({"url": url, "member": True, "run": False, "reopened": False,
-                      "seed_requester": False, "phase": phase, "project": "",
-                      "state": _pr_state(phase)})
+        owner, repo, _kind, _number = parse_github_url(url)
+        project = _resolve_project(owner, repo)[0]
+        gone = bool(project) and not _is_open(url)
+        data_gate = phase == "waiting_human" and record.get("resume") == "data_change"
+        plans.append({"url": url, "member": True, "run": gone, "reopened": False,
+                      "seed_requester": False, "phase": phase, "project": project,
+                      "state": _pr_state("stopped" if gone else "data_gate" if data_gate else phase)})
     return plans
+
+
+def _is_open(pr_url: str) -> bool:
+    """False only when GitHub says the PR is closed or merged."""
+    from app.github_url_parser import parse_github_url
+
+    owner, repo, _kind, number = parse_github_url(pr_url)
+    try:
+        return gh.pr_info(owner, repo, number)["state"] == "OPEN"
+    except RuntimeError as e:
+        print(f"[handle] cannot read {pr_url}: {e}", file=sys.stderr)
+        return True
 
 
 def _plan_pr(tick: Tick, pr: dict) -> dict:
@@ -781,10 +807,27 @@ def _start_delegated(tick: Tick) -> Result:
     if _issue_closed(tick):
         return _stop_on_closed_issue(tick)
     if phase == "":
+        _fall_back_to_the_author(tick)
         return _start(tick)
     if phase == "waiting_human" and record.get("resume") != "data_change":
+        if record.get("resume") == "retry":
+            # The retry runs the failed phase through _dispatch again, where
+            # this tag would send it straight back here and leave it undone.
+            tick.after = ""
         return _resume(tick)
     return True, f"after:delegate tick ignored in phase {phase}"
+
+
+def _fall_back_to_the_author(tick: Tick) -> None:
+    """A PR started for an issue nobody is the requester of answers to its author.
+
+    Same fallback as a human poke on the PR; a chained tick skips it.
+    """
+    author = tick.issue.get("author", "")
+    if not tick.requester and author and gh.is_authorized(
+            tick.owner, tick.repo, author, tick.project_name):
+        tick.save(requester=author)
+        tick.requester = author
 
 
 def _pr_state(phase: str) -> str:
