@@ -144,7 +144,14 @@ fails instead (error gate), since "none" would there mean "start over".
   (the closing keyword was edited out): the hand-off waits for it. A PR that left the
   listing because it was closed or merged while its pipeline was parked (a gate gets no
   tick of its own) is given a tick on the next poke of the issue: its pipeline stops,
-  and stops holding the issue.
+  and stops holding the issue. One that GitHub no longer serves, or whose repository
+  has no project left, cannot be given a tick: the issue marks it stopped itself.
+- **When every PR stopped and none is ready**, the roll-up tick concludes at once: "merged"
+  when one of them is (the pipeline stops), otherwise a comment that they were closed,
+  and `stopped`; a poke then starts over from triage.
+- **A PR the issue's own `/implement` pushed to** while that PR's separate pipeline had
+  already finished starts that pipeline afresh under the issue: the new head is not
+  handed off unchecked.
 - **Ownership is not released.** A PR stays with its owner while that owner's record
   exists, also when the owning issue was closed or the closing keyword moved to another
   issue. The other issue keeps naming the owner; reopening or poking the owner (or

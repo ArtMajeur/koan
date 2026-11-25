@@ -131,6 +131,11 @@ _TEMPLATES = {
         ),
         "prs_merged": "The pull requests of this issue are merged — nothing left to do:\n\n{prs}",
         "pr_state_owned": "handled by the pipeline of {issue_url}, which it also closes",
+        "pr_state_lost": "can no longer be read: I stop waiting for it",
+        "prs_closed": (
+            "{mention}The pull requests of this issue were closed without being merged, "
+            "so I stop here:\n\n{prs}\n\nComment `@{bot} handle` to start over from the issue."
+        ),
         "pr_state_done": "ready for review",
         "pr_state_stopped": "closed or merged",
         "pr_state_fork": "not handled: it comes from a fork",
@@ -256,6 +261,12 @@ _TEMPLATES = {
             "Les pull requests de cette issue sont fusionnées — plus rien à faire :\n\n{prs}"
         ),
         "pr_state_owned": "traitée par le pipeline de {issue_url}, qu'elle ferme aussi",
+        "pr_state_lost": "n'est plus lisible : j'arrête de l'attendre",
+        "prs_closed": (
+            "{mention}Les pull requests de cette issue ont été fermées sans être fusionnées, "
+            "donc je m'arrête ici :\n\n{prs}\n\nCommentez `@{bot} handle` pour repartir de "
+            "l'issue."
+        ),
         "pr_state_done": "prête pour la revue",
         "pr_state_stopped": "fermée ou fusionnée",
         "pr_state_fork": "non traitée : elle vient d'un fork",

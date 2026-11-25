@@ -1338,10 +1338,57 @@ class TestLinkedPullRequests:
         assert record.get("phase", "") == "" and record["parent"] == ISSUE
         assert pipeline.record()["phase"] == "delegated"
 
-    def test_roll_up_needs_a_pr_that_is_ready(self, pipeline):
+    @pytest.mark.parametrize("state, said", [("CLOSED", "closed without"), ("MERGED", "merged")])
+    def test_roll_up_concludes_when_every_pr_stopped(self, pipeline, state, said):
+        """Nothing is ready for review, and nothing will be: the issue must not sit there."""
         self._delegated(pipeline, app="stopped", api="stopped")
+        pipeline.github.pr_state = state
         pipeline.run(after="prs")
-        assert pipeline.record()["phase"] == "delegated" and pipeline.github.posted == []
+        assert pipeline.record()["phase"] == "stopped" and pipeline.github.board_moves == []
+        assert said in pipeline.github.posted[-1]
+
+    def test_poke_after_its_prs_were_closed_starts_over(self, pipeline):
+        self._delegated(pipeline, app="stopped", api="stopped")
+        pipeline.github.pr_state = "CLOSED"
+        pipeline.run(after="prs")
+        pipeline.github.linked = []
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+
+    def test_implement_onto_a_pr_finished_on_its_own_rechecks_it(self, pipeline):
+        handle_state.update_record(
+            pipeline.instance_dir, PR, phase="done", pr_url=PR, pr_number="12", requester="lead")
+        pipeline.seed(phase="implementing", phase_started_at=100.0)
+        pipeline.github.open_pr = {"url": PR, "number": 12, "headRefOid": HEAD,
+                                   "updated_at": 200.0}
+        pipeline.run(after="implement")
+        own = handle_state.load_record(pipeline.instance_dir, PR)
+        assert own.get("phase", "") == "" and (own["parent"], own["requester"]) == (ISSUE, "lead")
+        assert pipeline.queued() == [f"- [project:proj] /handle {PR} after:delegate"]
+        assert pipeline.record()["phase"] == "delegated"
+
+    def test_pr_that_cannot_be_reached_any_more_stops_holding_the_issue(self, pipeline):
+        self._delegated(pipeline, app="waiting_human", api="done")
+        pipeline.github.linked = [_linked(API_PR)]
+        pipeline.github.unreadable_pulls = {APP_PR}
+        pipeline.run()
+        assert self._pr_record(pipeline, APP_PR)["phase"] == "stopped"
+        assert pipeline.record()["phase"] == "done"
+        assert any("can no longer be read" in body for body in pipeline.github.posted)
+
+    def test_closed_pr_still_on_its_way_gets_no_second_stop(self, pipeline):
+        self._delegated(pipeline, app="reviewing", api="done")
+        pipeline.github.linked = [_linked(API_PR)]
+        pipeline.github.pull_states[APP_PR] = "CLOSED"
+        pipeline.run()
+        assert pipeline.pending() == []  # its own after:review tick will find it closed
+
+    def test_delegation_tick_on_a_pipeline_that_already_stopped_says_nothing(self, pipeline):
+        pipeline.seed(phase="delegated", prs=[APP_PR])
+        self._seed_pr(pipeline, APP_PR, phase="stopped")
+        pipeline.github.pull_states[APP_PR] = "CLOSED"
+        pipeline.run(url=APP_PR, after="delegate", project="appproj")
+        assert pipeline.github.posted == [] and pipeline.pending() == []
 
     def test_unreadable_links_leave_the_issue_to_triage(self, pipeline):
         pipeline.github.linked = RuntimeError("GraphQL: Resource protected by SAML")

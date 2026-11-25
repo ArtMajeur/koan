@@ -594,9 +594,17 @@ def _after_implement(tick: Tick) -> Result:
             if gh.same_login(p["author"], tick.bot) and p["updated_at"] >= since
         ]
         return _adopt_linked_prs(tick, opened) or _gate(tick, "implement_no_pr", "implement")
-    if handle_state.pr_owner(tick.instance_dir, pr["url"]) not in ("", tick.issue_url):
+    owner = handle_state.pr_owner(tick.instance_dir, pr["url"])
+    if owner not in ("", tick.issue_url):
         # Somebody drives this PR already (it was poked on its own, or another
         # issue it closes took it): one owner per PR, here as everywhere.
+        settled = handle_state.load_record(tick.instance_dir, pr["url"])
+        if handle_state.same_pr_url(owner, pr["url"]) and settled.get("phase") in (
+                "done", "stopped"):
+            # Its own pipeline had finished, and /implement just pushed to it:
+            # the new head goes through CI and review like any other.
+            keep = {"requester": settled["requester"]} if settled.get("requester") else {}
+            handle_state.reset_record(tick.instance_dir, pr["url"], **keep)
         claimed = {"url": pr["url"], "owner": tick.owner, "repo": tick.repo,
                    "number": str(pr["number"]), "project": tick.project_name}
         return _delegate(tick, [claimed], []) or _gate(tick, "implement_no_pr", "implement")
@@ -719,24 +727,33 @@ def _unlisted_members(tick: Tick, known: List[str], listed: set) -> List[dict]:
             continue
         owner, repo, _kind, _number = parse_github_url(url)
         project = _resolve_project(owner, repo)[0]
-        gone = bool(project) and not _is_open(url)
+        reach = _reach(url) if project else "lost"
         data_gate = phase == "waiting_human" and record.get("resume") == "data_change"
-        plans.append({"url": url, "member": True, "run": gone, "reopened": False,
-                      "seed_requester": False, "phase": phase, "project": project,
-                      "state": _pr_state("stopped" if gone else "data_gate" if data_gate else phase)})
+        state = {"gone": "stopped", "lost": "lost"}.get(reach) or (
+            "data_gate" if data_gate else phase)
+        plans.append({
+            "url": url, "member": True, "reopened": False, "seed_requester": False,
+            "phase": phase, "project": project, "state": _pr_state(state),
+            # Only a parked pipeline needs the tick: one on its way has its own,
+            # which finds the PR closed.
+            "run": reach == "gone" and phase in ("", "waiting_human"),
+            # No tick can run for a PR GitHub no longer serves, or that has no
+            # project left: the issue stops waiting for it.
+            "abandon": reach == "lost",
+        })
     return plans
 
 
-def _is_open(pr_url: str) -> bool:
-    """False only when GitHub says the PR is closed or merged."""
+def _reach(pr_url: str) -> str:
+    """``open``, ``gone`` (closed or merged) or ``lost`` (GitHub no longer serves it)."""
     from app.github_url_parser import parse_github_url
 
     owner, repo, _kind, number = parse_github_url(pr_url)
     try:
-        return gh.pr_info(owner, repo, number)["state"] == "OPEN"
+        return "open" if gh.pr_info(owner, repo, number)["state"] == "OPEN" else "gone"
     except RuntimeError as e:
         print(f"[handle] cannot read {pr_url}: {e}", file=sys.stderr)
-        return True
+        return "lost"
 
 
 def _plan_pr(tick: Tick, pr: dict) -> dict:
@@ -779,6 +796,9 @@ def _start_pr(tick: Tick, plan: dict) -> int:
     """Attach the PR's record to the issue and queue its tick; 1 when one was queued."""
     from app.utils import insert_pending_mission
 
+    if plan.get("abandon"):
+        handle_state.update_record(tick.instance_dir, plan["url"], phase="stopped", resume=None)
+        return 0
     if plan["reopened"]:
         handle_state.reset_record(tick.instance_dir, plan["url"])
     seed = {"parent": tick.issue_url}
@@ -804,6 +824,8 @@ def _start_delegated(tick: Tick) -> Result:
     record, phase = tick.record, tick.record.get("phase", "")
     if not (tick.is_pr and record.get("parent")):
         return True, f"Stale after:delegate tick ignored on {tick.issue_url}"
+    if phase in ("done", "stopped"):
+        return True, f"after:delegate tick ignored in phase {phase}"  # settled meanwhile
     if _issue_closed(tick):
         return _stop_on_closed_issue(tick)
     if phase == "":
@@ -832,7 +854,7 @@ def _fall_back_to_the_author(tick: Tick) -> None:
 
 def _pr_state(phase: str) -> str:
     key = {"": "new", "waiting_human": "gate", "data_gate": "data_gate",
-           "done": "done", "stopped": "stopped"}.get(phase)
+           "done": "done", "stopped": "stopped", "lost": "lost"}.get(phase)
     return render(f"pr_state_{key}") if key else render("pr_state_running", phase=phase)
 
 
@@ -847,13 +869,29 @@ def _poke_delegated(tick: Tick) -> Result:
     result = _delegate(tick, ok, skipped)
     if result:
         return result
+    return _stop_as_merged(tick) or _restart(tick)
+
+
+def _stop_as_merged(tick: Tick) -> Optional[Result]:
+    """Stop when one of the issue's PRs is merged; None when none is."""
     merged = [url for url in tick.record.get("prs") or [] if _is_merged(url)]
+    if not merged:
+        return None
+    tick.comment("prs_merged", prs="\n".join(f"- {url}" for url in merged))
+    tick.save(phase="stopped", resume=None)
+    tick.milestone, tick.note = "stopped", "The pull requests are already merged"
+    return True, f"{tick.issue_url}: its pull requests are merged"
+
+
+def _stop_without_prs(tick: Tick) -> Result:
+    """Every PR of the issue stopped and none is ready: say where that leaves the issue."""
+    merged = _stop_as_merged(tick)
     if merged:
-        tick.comment("prs_merged", prs="\n".join(f"- {url}" for url in merged))
-        tick.save(phase="stopped", resume=None)
-        tick.milestone, tick.note = "stopped", "The pull requests are already merged"
-        return True, f"{tick.issue_url}: its pull requests are merged"
-    return _restart(tick)
+        return merged
+    tick.comment("prs_closed", prs="\n".join(f"- {url}" for url in tick.record.get("prs") or []))
+    tick.save(phase="stopped", resume=None)
+    tick.milestone, tick.note = "stopped", "Its pull requests were closed"
+    return True, f"{tick.issue_url}: its pull requests were closed"
 
 
 def _is_merged(pr_url: str) -> bool:
@@ -876,6 +914,10 @@ def _after_prs(tick: Tick) -> Result:
         for url in tick.record.get("prs") or []
     }
     ready = [url for url, phase in phases.items() if phase == "done"]
+    if tick.chained and phases and all(phase == "stopped" for phase in phases.values()):
+        # The last PR just stopped: without this the issue would sit in
+        # `delegated` until somebody thought of poking it again.
+        return _stop_without_prs(tick)
     if not ready or any(phase not in ("done", "stopped") for phase in phases.values()):
         return True, f"Waiting for the pull requests of {tick.issue_url}"
     _move_board(tick, _review_column(tick))
