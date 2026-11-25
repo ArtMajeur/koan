@@ -114,12 +114,18 @@ _TEMPLATES = {
         "prs_status": (
             "{mention}This issue is closed by pull requests I handle one by one, each on "
             "its own thread:\n\n{prs}\n\nComment `@{bot} handle` on a pull request to move "
-            "it, or here for this status."
+            "it. Here, it gives this status and wakes the ones waiting for an answer; a "
+            "data change is only approved on its own pull request."
         ),
         "prs_done": "{mention}Every pull request for this issue is ready for review:\n\n{prs}",
         "pr_state_new": "starting (CI, then review)",
         "pr_state_running": "in progress (step: {phase})",
         "pr_state_gate": "waiting for a human, see its thread",
+        "pr_state_data_gate": "waiting for a human to approve a data change, on its thread",
+        "pr_state_unauthorized": (
+            "not handled: you are not allowed to command me on its repository"
+        ),
+        "prs_merged": "The pull requests of this issue are merged — nothing left to do:\n\n{prs}",
         "pr_state_done": "ready for review",
         "pr_state_stopped": "closed or merged",
         "pr_state_fork": "not handled: it comes from a fork",
@@ -220,7 +226,9 @@ _TEMPLATES = {
         "prs_status": (
             "{mention}Cette issue est fermée par des pull requests que je traite une par "
             "une, chacune dans son fil :\n\n{prs}\n\nCommentez `@{bot} handle` sur une pull "
-            "request pour la faire avancer, ou ici pour cet état."
+            "request pour la faire avancer. Ici, il donne cet état et relance celles qui "
+            "attendent une réponse ; une modification de données ne s'approuve que sur sa "
+            "propre pull request."
         ),
         "prs_done": (
             "{mention}Toutes les pull requests de cette issue sont prêtes pour la revue :"
@@ -229,6 +237,15 @@ _TEMPLATES = {
         "pr_state_new": "démarrage (CI, puis revue)",
         "pr_state_running": "en cours (étape : {phase})",
         "pr_state_gate": "en attente d'un humain, voir son fil",
+        "pr_state_data_gate": (
+            "en attente d'un humain pour approuver une modification de données, dans son fil"
+        ),
+        "pr_state_unauthorized": (
+            "non traitée : vous n'êtes pas autorisé à me commander sur son dépôt"
+        ),
+        "prs_merged": (
+            "Les pull requests de cette issue sont fusionnées — plus rien à faire :\n\n{prs}"
+        ),
         "pr_state_done": "prête pour la revue",
         "pr_state_stopped": "fermée ou fusionnée",
         "pr_state_fork": "non traitée : elle vient d'un fork",

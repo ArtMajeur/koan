@@ -96,7 +96,11 @@ repositories it groups), or by several of them. The **linked pull requests** of 
 are the open PRs GitHub lists as closing it (`closedByPullRequestsReferences`: a closing
 keyword in the PR body, or the issue's *Development* links), whoever authored them. A PR
 from a fork, or in a repository no project is configured for, cannot be handled: it is
-named in the status comment and otherwise ignored.
+named in the status comment and otherwise ignored. So is a PR in a repository where the
+requester may not command the bot: a poke on the issue starts no work there. When
+GitHub cannot list the linked PRs (a linked repository the token cannot read), triage and
+the PR an `/implement` opened go on as if there were none; a poke on a `delegated` issue
+fails instead (error gate), since "none" would there mean "start over".
 
 - **When they are looked up.** Before every triage (first `/handle`, a poke at a triage
   gate): an issue that already has linked PRs is not triaged, planned or implemented
@@ -113,16 +117,26 @@ named in the status comment and otherwise ignored.
 - **Starting a PR pipeline** is a `/handle <pr-url>` mission. Delegation queues it for a PR
   with no pipeline yet, and for one parked at a gate; a PR already moving is left alone,
   and one already handed off is only reported: a new fix round is asked on the PR itself.
+  A PR whose pipeline stopped (it was closed) and that is open again starts afresh.
+- **A data change is never approved from the issue.** A PR parked at a `data_change` gate
+  is reported, not poked, and a reply on the issue does not reopen that gate: the
+  approval is a `@<bot> handle` on the PR, by someone who looked at its files.
 - **Roll-up.** A PR pipeline with a `parent` queues `/handle <issue> after:prs` whenever
   it stops moving (gate, hand-off, PR closed or merged). That tick reads the PRs' records:
   once every PR is handed off or stopped, and at least one is handed off, the issue gets
   one summary comment, moves to the review column (same rule as a hand-off) and enters
   `done`. Until then it only logs: each PR reports on its own thread.
 - **Pokes.** On the issue: the linked PRs are looked up again (a new one is adopted), the
-  reply gives one status line per PR, and gated PRs are poked. With no open linked PR
-  left, the issue starts over from triage. On a PR: that PR's pipeline, as for any PR.
-- **Gates.** A delegated PR's gate also reopens on a human reply written on the parent
-  issue after the gate.
+  reply gives one status line per PR, and gated PRs are poked. A poke on an issue already
+  handed off, with nothing new to start, gets the status only: no second summary or
+  board move. With no open linked PR left: if one of the issue's PRs is merged, the
+  reply says so and the pipeline stops (a PR merged into a branch that does not close
+  the issue must not be implemented again); otherwise the issue starts over from triage.
+  On a PR: that PR's pipeline, as for any PR.
+- **Gates.** A delegated PR's gate, other than a data change, also reopens on a human
+  reply written on the parent issue after the gate.
+- **Closing the issue** stops the issue's own roll-up, not its PRs' pipelines: merging one
+  PR can close the issue while another is still moving. Close a PR to stop its pipeline.
 - **Not unified:** an issue that adopted a single PR of its own repository keeps the
   single-PR record; a second linked PR appearing later is not picked up by that record.
 

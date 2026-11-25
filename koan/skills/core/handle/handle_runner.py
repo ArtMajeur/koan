@@ -218,9 +218,14 @@ def _wake_parent(tick: Tick) -> None:
     parent = tick.record.get("parent")
     if not parent or tick.milestone == "progress":
         return
-    project = handle_state.load_record(tick.instance_dir, parent).get("project", "")
-    insert_pending_mission(
-        Path(tick.instance_dir) / "missions.md", handle_state.handle_entry(project, parent, "prs"))
+    try:
+        project = handle_state.load_record(tick.instance_dir, parent).get("project", "")
+        insert_pending_mission(
+            Path(tick.instance_dir) / "missions.md",
+            handle_state.handle_entry(project, parent, "prs"))
+    except (RuntimeError, OSError) as e:
+        # The PR's own tick succeeded; a poke on the issue re-reads its PRs.
+        print(f"[handle] could not wake {parent}: {e}", file=sys.stderr)
 
 
 def _bot_login() -> str:
@@ -462,7 +467,7 @@ def _adopt_pr(tick: Tick) -> Result:
 
 def _triage(tick: Tick) -> Result:
     # An issue that already has pull requests is not triaged or implemented again.
-    adopted = _adopt_linked_prs(tick, gh.linked_prs(tick.owner, tick.repo, tick.number))
+    adopted = _adopt_linked_prs(tick, _linked_prs(tick))
     if adopted:
         return adopted
     try:
@@ -567,7 +572,7 @@ def _after_implement(tick: Tick) -> Result:
     if pr is None or pr["updated_at"] < since:
         # The code may live in other repositories than the issue.
         opened = [
-            p for p in gh.linked_prs(tick.owner, tick.repo, tick.number)
+            p for p in _linked_prs(tick)
             if gh.same_login(p["author"], tick.bot) and p["updated_at"] >= since
         ]
         return _adopt_linked_prs(tick, opened) or _gate(tick, "implement_no_pr", "implement")
@@ -576,6 +581,20 @@ def _after_implement(tick: Tick) -> Result:
 
 
 # -- an issue's linked pull requests ----------------------------------------------
+
+
+def _linked_prs(tick: Tick) -> List[dict]:
+    """The issue's linked PRs, or none when GitHub cannot say.
+
+    The lookup comes before steps that worked without it (triage, the PR an
+    /implement opened): a linked repository the token cannot read must not
+    stop them.
+    """
+    try:
+        return gh.linked_prs(tick.owner, tick.repo, tick.number)
+    except RuntimeError as e:
+        print(f"[handle] linked pull requests of {tick.issue_url} unreadable: {e}", file=sys.stderr)
+        return []
 
 
 def _handleable(prs: List[dict]) -> Tuple[List[dict], List[dict]]:
@@ -612,30 +631,49 @@ def _delegate(tick: Tick, prs: List[dict], skipped: List[dict]) -> Result:
     """Give each PR a pipeline of its own, under its repository's project."""
     from app.utils import insert_pending_mission
 
-    lines = []
+    handed_off = tick.record.get("phase") == "done"
+    lines, urls, queued = [], [], 0
     for pr in prs:
+        if tick.requester and not gh.is_authorized(
+                pr["owner"], pr["repo"], tick.requester, pr["project"]):
+            # The poke would start work, and pushes, in a repository its author
+            # has no say in.
+            skipped.append({**pr, "skip": "unauthorized"})
+            continue
         record = handle_state.load_record(tick.instance_dir, pr["url"])
+        if record.get("phase") == "stopped":
+            # Linked PRs are open ones: this one was closed, then reopened.
+            handle_state.reset_record(tick.instance_dir, pr["url"])
+            record = {}
         phase = record.get("phase", "")
+        data_gate = phase == "waiting_human" and record.get("resume") == "data_change"
         seed = {"parent": tick.issue_url}
         if tick.requester and not record.get("requester"):
             seed["requester"] = tick.requester
         handle_state.update_record(tick.instance_dir, pr["url"], **seed)
         # A PR on its way is left alone, and a handed-off one is not restarted:
-        # only a new PR, or one parked at a gate, gets a tick.
-        if phase in ("", "waiting_human"):
-            insert_pending_mission(
+        # only a new PR, or one parked at a gate, gets a tick. A data change is
+        # approved on the PR's own thread, never by a poke on the issue.
+        if phase == "" or (phase == "waiting_human" and not data_gate):
+            queued += insert_pending_mission(
                 Path(tick.instance_dir) / "missions.md",
                 handle_state.handle_entry(pr["project"], pr["url"]))
-        lines.append(f"- {pr['url']}: {_pr_state(phase)}")
+        urls.append(pr["url"])
+        lines.append(f"- {pr['url']}: {_pr_state('data_gate' if data_gate else phase)}")
     lines += [f"- {pr['url']}: {render('pr_state_' + pr['skip'])}" for pr in skipped]
-    tick.save(phase="delegated", prs=[pr["url"] for pr in prs], resume=None)
+    tick.note = f"{len(urls)} pull request(s), each handled on its own thread"
+    # A poke on an issue already handed off, with nothing new: the status only.
+    still_done = handed_off and not queued and set(urls) == set(tick.record.get("prs") or [])
+    tick.save(phase="done" if still_done else "delegated", prs=urls, resume=None)
     tick.comment("prs_status", prs="\n".join(lines))
-    tick.note = f"{len(prs)} pull request(s), each handled on its own thread"
+    if still_done:
+        return True, f"{tick.issue_url} is handed off; nothing new"
     return _after_prs(tick)
 
 
 def _pr_state(phase: str) -> str:
-    key = {"": "new", "waiting_human": "gate", "done": "done", "stopped": "stopped"}.get(phase)
+    key = {"": "new", "waiting_human": "gate", "data_gate": "data_gate",
+           "done": "done", "stopped": "stopped"}.get(phase)
     return render(f"pr_state_{key}") if key else render("pr_state_running", phase=phase)
 
 
@@ -645,10 +683,24 @@ def _delegated(tick: Tick) -> Result:
 
 def _poke_delegated(tick: Tick) -> Result:
     """A human `handle` on a delegating issue: look the PRs up again and report."""
+    # A failed lookup must not read as "no PR left" (that starts over): it raises.
     ok, skipped = _handleable(gh.linked_prs(tick.owner, tick.repo, tick.number))
     if ok:
         return _delegate(tick, ok, skipped)
+    merged = [url for url in tick.record.get("prs") or [] if _is_merged(url)]
+    if merged:
+        tick.comment("prs_merged", prs="\n".join(f"- {url}" for url in merged))
+        tick.save(phase="stopped", resume=None)
+        tick.milestone, tick.note = "stopped", "The pull requests are already merged"
+        return True, f"{tick.issue_url}: its pull requests are merged"
     return _restart(tick)
+
+
+def _is_merged(pr_url: str) -> bool:
+    from app.github_url_parser import parse_github_url
+
+    owner, repo, _kind, number = parse_github_url(pr_url)
+    return gh.pr_info(owner, repo, number)["state"] == "MERGED"
 
 
 def _after_prs(tick: Tick) -> Result:
@@ -955,7 +1007,9 @@ def _replied_since_gate(tick: Tick) -> bool:
         if not tick.is_pr:  # a pull-request pipeline's thread is tick.comments already
             threads += gh.fetch_comments(*tick.pr_ref, tick.pr_number)
         threads += gh.fetch_review_activity(*tick.pr_ref, tick.pr_number)
-    if tick.record.get("parent"):  # a delegated PR's gate is also answered on its issue
+    # A delegated PR's gate is also answered on its issue, except a data
+    # change: approving one takes a look at the PR, on the PR.
+    if tick.record.get("parent") and tick.record.get("resume") != "data_change":
         from app.github_url_parser import parse_github_url
 
         owner, repo, _kind, number = parse_github_url(tick.record["parent"])
