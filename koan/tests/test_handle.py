@@ -1152,6 +1152,15 @@ class TestTransferredIssue:
         assert f"/plan {ISSUE}" in pipeline.pending()[0]
         assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE) == {}
 
+    def test_poke_written_before_the_tick_runs_still_names_the_requester(self, pipeline):
+        self._gate_then_transfer(pipeline)
+        pipeline.set_triage(_triage_output("go"))
+        pipeline.github.comments.append(
+            {"author": "lead", "body": f"Euros. @{BOT} handle", "created_at": time.time()})
+        time.sleep(0.01)
+        pipeline.run()
+        assert pipeline.record()["requester"] == "lead"
+
     def test_quoted_marker_cannot_take_over_another_record(self, pipeline):
         """The marker names a record GitHub does not redirect to this issue."""
         handle_state.update_record(pipeline.instance_dir, OLD_ISSUE, phase="done", requester="lead")

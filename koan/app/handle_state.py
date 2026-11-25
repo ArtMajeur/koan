@@ -123,14 +123,15 @@ def rename_record(instance_dir: str, old_url: str, new_url: str, **changes) -> d
     """Move *old_url*'s record to *new_url* (a transferred issue) and return it.
 
     Returns an empty dict, and writes nothing, when *old_url* has no record or
-    *new_url* already has one.
+    *new_url* already has one. ``updated_at`` is kept: it dates the last tick,
+    and the poke that follows the transfer must still read as newer than it.
     """
     record = {}
 
     def _change(data: dict) -> bool:
         if not data.get(old_url) or data.get(new_url):
             return False
-        record.update(data.pop(old_url), **changes, updated_at=time.time())
+        record.update(data.pop(old_url), **changes)
         data[new_url] = record
         return True
 
