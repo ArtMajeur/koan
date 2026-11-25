@@ -111,17 +111,35 @@ fails instead (error gate), since "none" would there mean "start over".
   again. After `/implement`, when the `<prefix>implement-<N>` branch has no fresh PR in
   the issue's own repository: the bot's own linked PRs updated since the phase started.
   And on every poke of a `delegated` issue.
-- **One PR, in the issue's own repository:** the issue's record adopts it (`pr_url`) and
-  enters `ci`: the single-PR pipeline above, unchanged.
-- **Anything else** (a PR in another repository, or several PRs): the issue **delegates**.
-  Its record lists the PRs (`prs`) and enters `delegated`. Each PR gets a pull-request
-  pipeline of its own, keyed by its URL, under the project of **its** repository, so CI,
-  the data-change check and QA follow that repository's `handle:` settings. The PR's
-  record names the issue as its `parent` and starts with the issue's requester.
-- **Starting a PR pipeline** is a `/handle <pr-url>` mission. Delegation queues it for a PR
-  with no pipeline yet, and for one parked at a gate; a PR already moving is left alone,
-  and one already handed off is only reported: a new fix round is asked on the PR itself.
-  A PR whose pipeline stopped (it was closed) and that is open again starts afresh.
+- **One owner per PR.** A PR can close several issues; only one pipeline drives it. Its
+  **owner** is, in this order: the issue whose record tracks it as its own PR (`pr_url`);
+  else the issue its own record names as `parent`; else the PR itself when it has a
+  pipeline of its own (a human poked it). A PR nobody owns is claimed by the first issue
+  that looks it up. An issue never takes, re-parents, pokes or waits for a PR another
+  issue owns: it names it in its reply, with the owner. An issue all of whose linked PRs
+  belong to other issues says so and stops (it is not triaged: its fix is under way
+  there), without assigning the bot or moving the board.
+- **One PR, in the issue's own repository, that has no pipeline yet:** the issue's record
+  adopts it (`pr_url`) and enters `ci`: the single-PR pipeline above, unchanged.
+- **Anything else** (a PR in another repository, several PRs, or a PR that already has a
+  pipeline of its own): the issue **delegates**. Its record lists the PRs it owns (`prs`),
+  drops any PR reference of its own (`pr_url`), and enters `delegated`. Each PR has a
+  pull-request pipeline, keyed by its URL, under the project of **its** repository, so
+  CI, the data-change check and QA follow that repository's `handle:` settings. The PR's
+  record names the issue as its `parent`; a PR claimed with no requester of its own
+  starts with the issue's.
+- **Starting a PR pipeline** is a `/handle <pr-url> after:delegate` mission: a chained
+  tick, never a human poke. It acts only on the PR's own record, and only when that
+  record names an issue as `parent`: it starts a PR that has no phase yet and resumes one
+  parked at a gate other than a data change. In any other state, or when the tick reaches
+  another record (an issue took the PR as its own in the meantime), it is ignored.
+  Delegation queues it for a PR with no pipeline yet and for one parked at a gate; a PR
+  already moving is left alone, and one already handed off is only reported: a new fix
+  round is asked on the PR itself. A PR whose pipeline stopped (it was closed) and that
+  is open again starts afresh.
+- **The issue's list only grows or settles.** A PR the issue owns stays in `prs` until its
+  pipeline is done or stopped, even when GitHub stops listing it as closing the issue
+  (the closing keyword was edited out): the hand-off waits for it.
 - **A data change is never approved from the issue.** A PR parked at a `data_change` gate
   is reported, not poked, and a reply on the issue does not reopen that gate: the
   approval is a `@<bot> handle` on the PR, by someone who looked at its files.
@@ -144,7 +162,9 @@ fails instead (error gate), since "none" would there mean "start over".
 - **Closing the issue** stops the issue's own roll-up, not its PRs' pipelines: merging one
   PR can close the issue while another is still moving. Close a PR to stop its pipeline.
 - **Not unified:** an issue that adopted a single PR of its own repository keeps the
-  single-PR record; a second linked PR appearing later is not picked up by that record.
+  single-PR record while that pipeline runs; a second linked PR appearing later is not
+  picked up by that record.
+- A transferred issue (below) keeps its PRs: their `parent` follows the issue's new URL.
 
 ### Transferred issue
 

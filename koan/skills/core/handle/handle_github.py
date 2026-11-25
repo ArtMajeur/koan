@@ -182,6 +182,13 @@ def assign_self(owner: str, repo: str, number: str) -> bool:
 # -- pull request ---------------------------------------------------------
 
 
+def _required(node: dict, key: str):
+    """A field a record is later keyed or driven by: a null one is an unreadable answer."""
+    if not node.get(key):
+        raise ValueError(f"linked pull request without {key}")
+    return node[key]
+
+
 def linked_prs(owner: str, repo: str, number: str) -> List[dict]:
     """The open PRs GitHub lists as closing the issue, in any repository.
 
@@ -195,15 +202,16 @@ def linked_prs(owner: str, repo: str, number: str) -> List[dict]:
         nodes = data["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["nodes"]
         return [
             {
-                "url": pr["url"], "owner": pr["repository"]["owner"]["login"],
-                "repo": pr["repository"]["name"], "number": str(pr["number"]),
+                "url": _required(pr, "url"), "owner": pr["repository"]["owner"]["login"],
+                "repo": pr["repository"]["name"], "number": str(_required(pr, "number")),
                 "author": (pr.get("author") or {}).get("login") or "",
-                "is_fork": bool(pr.get("isCrossRepository")), "branch": pr["headRefName"],
+                "is_fork": bool(pr.get("isCrossRepository")),
+                "branch": _required(pr, "headRefName"),
                 "updated_at": _epoch(pr["updatedAt"]),
             }
             for pr in nodes or [] if pr and pr.get("state") == "OPEN"
         ]
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
         # A PR in a repository the token cannot read comes back with null fields.
         raise RuntimeError(f"unreadable linked pull requests of {owner}/{repo}#{number}") from e
 

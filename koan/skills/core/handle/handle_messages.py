@@ -118,6 +118,10 @@ _TEMPLATES = {
             "data change is only approved on its own pull request."
         ),
         "prs_done": "{mention}Every pull request for this issue is ready for review:\n\n{prs}",
+        "prs_owned": (
+            "{mention}The pull requests that close this issue are already handled from "
+            "another issue, so I don't take this one:\n\n{prs}"
+        ),
         "pr_state_new": "starting (CI, then review)",
         "pr_state_running": "in progress (step: {phase})",
         "pr_state_gate": "waiting for a human, see its thread",
@@ -234,6 +238,10 @@ _TEMPLATES = {
         "prs_done": (
             "{mention}Toutes les pull requests de cette issue sont prêtes pour la revue :"
             "\n\n{prs}"
+        ),
+        "prs_owned": (
+            "{mention}Les pull requests qui ferment cette issue sont déjà traitées depuis "
+            "une autre issue, donc je ne prends pas celle-ci :\n\n{prs}"
         ),
         "pr_state_new": "démarrage (CI, puis revue)",
         "pr_state_running": "en cours (étape : {phase})",

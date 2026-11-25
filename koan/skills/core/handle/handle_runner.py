@@ -262,6 +262,7 @@ def _load_tick(
         # Another tick renamed the record first; this one may still carry the
         # project it was queued under before the transfer.
         _run_under_the_new_repository(tick)
+    _keep_children(tick)
     tick.requester = _resolve_requester(tick)
     return tick
 
@@ -291,6 +292,16 @@ def _follow_transfer(tick: Tick) -> dict:
     _run_under_the_new_repository(tick)
     return handle_state.rename_record(
         tick.instance_dir, old_url, tick.issue_url, project=tick.project_name)
+
+
+def _keep_children(tick: Tick) -> None:
+    """After a transfer, the issue's PRs name it by its new URL."""
+    former = {url for url, _project in handle_state.former_keys(tick.record)}
+    if not former:
+        return
+    for url in tick.record.get("prs") or []:
+        if handle_state.load_record(tick.instance_dir, url).get("parent") in former:
+            handle_state.update_record(tick.instance_dir, url, parent=tick.issue_url)
 
 
 def _former_record_key(tick: Tick) -> str:
@@ -404,6 +415,8 @@ def _fail(
 
 def _dispatch(tick: Tick) -> Result:
     phase = tick.record.get("phase", "")
+    if tick.after == "delegate":
+        return _start_delegated(tick)
     if tick.chained and tick.after not in _EXPECTED_AFTER.get(phase, ()):
         # A follow-up, relay or re-check left over from an earlier path (the
         # pipeline gated, a poke moved it on): acting on it would repeat work
@@ -446,9 +459,13 @@ def _start(tick: Tick) -> Result:
     if tick.is_pr:
         return _adopt_pr(tick)
     tick.save(project=tick.project_name, phase="triage")
+    # An issue that already has pull requests is not triaged or implemented again.
+    adopted = _adopt_linked_prs(tick, _linked_prs(tick))
+    if adopted and tick.record.get("phase") == "stopped":
+        return adopted  # its PRs belong to another issue: this one is not taken
     gh.assign_self(tick.owner, tick.repo, tick.number)
     _move_board(tick, "in_progress")
-    return _triage(tick)
+    return adopted or _triage_issue(tick)
 
 
 def _adopt_pr(tick: Tick) -> Result:
@@ -466,10 +483,11 @@ def _adopt_pr(tick: Tick) -> Result:
 
 
 def _triage(tick: Tick) -> Result:
-    # An issue that already has pull requests is not triaged or implemented again.
-    adopted = _adopt_linked_prs(tick, _linked_prs(tick))
-    if adopted:
-        return adopted
+    """Resume at triage: the PRs linked since the gate come first."""
+    return _adopt_linked_prs(tick, _linked_prs(tick)) or _triage_issue(tick)
+
+
+def _triage_issue(tick: Tick) -> Result:
     try:
         output = _run_triage(tick)
     except (RuntimeError, subprocess.TimeoutExpired) as e:
@@ -617,10 +635,11 @@ def _adopt_linked_prs(tick: Tick, prs: List[dict]) -> Optional[Result]:
     ok, skipped = _handleable(prs)
     if not ok:
         return None
-    own_repo = (ok[0]["owner"].lower(), ok[0]["repo"].lower()) == (
-        tick.owner.lower(), tick.repo.lower())
-    if len(prs) == 1 and own_repo:
-        pr = ok[0]
+    pr = ok[0]
+    own_repo = (pr["owner"].lower(), pr["repo"].lower()) == (tick.owner.lower(), tick.repo.lower())
+    # The single-PR pipeline only takes a PR nobody drives yet; one that has a
+    # pipeline already keeps it, and the issue waits for it like for any other.
+    if len(prs) == 1 and own_repo and not handle_state.pr_owner(tick.instance_dir, pr["url"]):
         tick.comment("pr_adopted", pr_url=pr["url"])
         tick.save(pr_url=pr["url"], pr_number=pr["number"], branch=pr["branch"], review_round=0)
         return _await_ci(tick)
@@ -628,25 +647,31 @@ def _adopt_linked_prs(tick: Tick, prs: List[dict]) -> Optional[Result]:
 
 
 def _delegate(tick: Tick, prs: List[dict], skipped: List[dict]) -> Optional[Result]:
-    """Give each PR a pipeline of its own, under its repository's project.
+    """Give each PR the issue owns a pipeline of its own, under its repository's project.
 
-    None, with nothing written, when no PR is this issue's to wait for: the
-    caller goes on as it does without a linked PR.
+    None, with nothing written, when the issue owns none of them and no other
+    issue does either: the caller goes on as it does without a linked PR.
     """
     handed_off = tick.record.get("phase") == "done"
-    known = set(tick.record.get("prs") or [])
+    known = list(tick.record.get("prs") or [])
     plans = [_plan_pr(tick, pr) for pr in prs]
+    plans += _unlisted_members(tick, known, {plan["url"] for plan in plans})
     members = [plan for plan in plans if plan["member"]]
     if not members:
-        return None
+        return _left_to_other_issues(tick, plans)
+    if tick.record.get("pr_url"):
+        # The issue no longer drives a PR itself: a reference left here would
+        # route that PR's ticks to the issue instead of its own pipeline.
+        tick.save(pr_url=None, pr_number=None, branch=None)
+        tick.pr_view = None
     queued = sum(_start_pr(tick, plan) for plan in members)
     urls = [plan["url"] for plan in members]
     lines = [f"- {plan['url']}: {plan['state']}" for plan in plans]
     lines += [f"- {pr['url']}: {render('pr_state_' + pr['skip'])}" for pr in skipped]
     tick.note = f"{len(urls)} pull request(s), each handled on its own thread"
     # A poke on an issue already handed off, with nothing new to start or to
-    # wait for: the status only. (A PR closed since then has left the links.)
-    still_done = (handed_off and not queued and set(urls) <= known
+    # wait for: the status only.
+    still_done = (handed_off and not queued and set(urls) <= set(known)
                   and all(plan["phase"] == "done" for plan in members))
     tick.save(phase="done" if still_done else "delegated", prs=urls, resume=None)
     tick.comment("prs_status", prs="\n".join(lines))
@@ -655,25 +680,57 @@ def _delegate(tick: Tick, prs: List[dict], skipped: List[dict]) -> Optional[Resu
     return _after_prs(tick)
 
 
+def _left_to_other_issues(tick: Tick, plans: List[dict]) -> Optional[Result]:
+    """Every linked PR belongs to another issue's pipeline: say so and stop.
+
+    Triaging and implementing here would redo the fix under way there. None
+    when no PR is owned elsewhere (they were only refused): the caller goes on.
+    """
+    owned = [plan for plan in plans if plan.get("owner")]
+    if not owned:
+        return None
+    tick.comment("prs_owned", prs="\n".join(f"- {p['url']}: {p['state']}" for p in owned))
+    tick.save(phase="stopped", resume=None)
+    tick.milestone, tick.note = "stopped", "Its pull requests are handled from another issue"
+    return True, f"{tick.issue_url}: its pull requests belong to other pipelines"
+
+
+def _unlisted_members(tick: Tick, known: List[str], listed: set) -> List[dict]:
+    """PRs the issue owns that GitHub no longer lists as closing it, still under way.
+
+    The closing keyword may have been edited out of an open PR: dropping it
+    here would hand the issue off without it.
+    """
+    plans = []
+    for url in known:
+        record = handle_state.load_record(tick.instance_dir, url)
+        phase = record.get("phase", "")
+        if url in listed or record.get("parent") != tick.issue_url or phase in ("done", "stopped"):
+            continue
+        plans.append({"url": url, "member": True, "run": False, "reopened": False,
+                      "seed_requester": False, "phase": phase, "project": "",
+                      "state": _pr_state(phase)})
+    return plans
+
+
 def _plan_pr(tick: Tick, pr: dict) -> dict:
     """What a poke on the issue means for one linked PR; nothing is written here.
 
-    ``member``: the issue waits for this PR. ``run``: the PR gets a tick.
+    ``member``: the issue owns this PR and waits for it. ``run``: the PR gets a tick.
     """
     plan = {"url": pr["url"], "project": pr["project"], "member": False, "run": False,
             "reopened": False, "seed_requester": False, "phase": ""}
-    # A tick queued for a PR goes to the record that tracks it. When that is
-    # another issue's own pipeline, this issue has no say in it: poking it
-    # would resume that pipeline's gate.
-    tracked_by = handle_state.find_issue_for_pr(tick.instance_dir, pr["url"])
-    if tracked_by and not handle_state.same_pr_url(tracked_by, pr["url"]) \
-            and tracked_by != tick.issue_url:
-        return {**plan, "state": render("pr_state_owned", issue_url=tracked_by)}
+    # One owner per PR: unclaimed, ours, or handled on its own so far (the issue
+    # then takes it over). Anything else is another issue's, and stays so.
+    owner = handle_state.pr_owner(tick.instance_dir, pr["url"])
+    if owner and owner != tick.issue_url and not handle_state.same_pr_url(owner, pr["url"]):
+        return {**plan, "owner": owner, "state": render("pr_state_owned", issue_url=owner)}
     record = handle_state.load_record(tick.instance_dir, pr["url"])
-    # Rights decide what a poke may start, never which PRs the issue waits for.
+    # Rights decide what a poke may start or claim, never which of its PRs the
+    # issue waits for.
     authorized = not tick.requester or gh.is_authorized(
         pr["owner"], pr["repo"], tick.requester, pr["project"])
-    if not authorized and record.get("parent") != tick.issue_url:
+    if not authorized and owner != tick.issue_url:
         return {**plan, "state": render("pr_state_unauthorized")}
     phase = record.get("phase", "")
     # Linked PRs are open ones: a stopped pipeline's PR was closed, then reopened.
@@ -704,9 +761,30 @@ def _start_pr(tick: Tick, plan: dict) -> int:
     handle_state.update_record(tick.instance_dir, plan["url"], **seed)
     if not plan["run"]:
         return 0
+    # Tagged, so it is never read as a human poke: see _start_delegated.
     return int(insert_pending_mission(
         Path(tick.instance_dir) / "missions.md",
-        handle_state.handle_entry(plan["project"], plan["url"])))
+        handle_state.handle_entry(plan["project"], plan["url"], "delegate")))
+
+
+def _start_delegated(tick: Tick) -> Result:
+    """The tick an issue queued for one of its PRs (``after:delegate``).
+
+    It may start that PR's pipeline or resume a gate the issue's poke answered,
+    and nothing else. It acts on the PR's own record only: if an issue took the
+    PR as its own since the tick was queued, the tick reaches that issue's
+    record, where it must not stand in for the human reply its gate waits for.
+    """
+    record, phase = tick.record, tick.record.get("phase", "")
+    if not (tick.is_pr and record.get("parent")):
+        return True, f"Stale after:delegate tick ignored on {tick.issue_url}"
+    if _issue_closed(tick):
+        return _stop_on_closed_issue(tick)
+    if phase == "":
+        return _start(tick)
+    if phase == "waiting_human" and record.get("resume") != "data_change":
+        return _resume(tick)
+    return True, f"after:delegate tick ignored in phase {phase}"
 
 
 def _pr_state(phase: str) -> str:
@@ -723,7 +801,7 @@ def _poke_delegated(tick: Tick) -> Result:
     """A human `handle` on a delegating issue: look the PRs up again and report."""
     # A failed lookup must not read as "no PR left" (that starts over): it raises.
     ok, skipped = _handleable(gh.linked_prs(tick.owner, tick.repo, tick.number))
-    result = _delegate(tick, ok, skipped) if ok else None
+    result = _delegate(tick, ok, skipped)
     if result:
         return result
     merged = [url for url in tick.record.get("prs") or [] if _is_merged(url)]

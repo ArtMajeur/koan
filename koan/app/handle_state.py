@@ -92,6 +92,27 @@ def _record_for_pr(data: dict, pr_url: str) -> Optional[Tuple[str, dict]]:
     return own
 
 
+def pr_owner(instance_dir: str, pr_url: str) -> str:
+    """Key of the one pipeline that drives *pr_url* ("" when nobody claimed it).
+
+    In this order: the issue whose record tracks it as its own PR; the issue
+    its own record names as ``parent``; the PR itself when it has a pipeline
+    of its own. A PR can close several issues, and two pipelines on one PR
+    would approve each other's gates and push under each other.
+    """
+    if not _state_path(instance_dir).exists():
+        return ""
+    own = ""
+    for key, record in _read_all(instance_dir).items():
+        if not isinstance(record, dict):
+            continue
+        if same_pr_url(key, pr_url):
+            own = record.get("parent") or (key if record.get("phase") else "")
+        elif same_pr_url(record.get("pr_url") or "", pr_url):
+            return key
+    return own
+
+
 def load_record(instance_dir: str, issue_url: str) -> dict:
     """Return the record for *issue_url*, or an empty dict when untracked."""
     return dict(_read_all(instance_dir).get(issue_url) or {})
