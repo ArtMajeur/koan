@@ -22,6 +22,7 @@ BOT = "koan-bot"
 ISSUE = "https://github.com/owner/repo/issues/7"
 PR = "https://github.com/owner/repo/pull/12"
 HEAD = "abc123"
+PROJECT_OF = {"repo": "proj", "app": "appproj"}  # repository → configured project
 EMPTY_MISSIONS = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
 AUDIT = (
     "**Assumptions audit (auto):** the following plan assumptions were flagged — "
@@ -70,6 +71,7 @@ class FakeGitHub:
         self.changed_files = None
         self.head_after_listing = None
         self.redirects = {}  # old issue URL → where GitHub now serves it
+        self.pr_calls = []  # (owner, repo, number) of every PR read
 
     def install(self, enter):
         gh = handle_runner.gh
@@ -104,6 +106,7 @@ class FakeGitHub:
         return self.open_pr
 
     def pr_info(self, owner, repo, number):
+        self.pr_calls.append((owner, repo, number))
         return {"state": self.pr_state, "headRefOid": HEAD, "isDraft": True, "url": PR,
                 "headRefName": "feature/x", "isCrossRepository": self.cross_repository}
 
@@ -159,6 +162,9 @@ def pipeline(tmp_path, monkeypatch):
     with ExitStack() as stack:
         fake.install(stack.enter_context)
         stack.enter_context(patch.object(handle_runner, "_bot_login", return_value=BOT))
+        stack.enter_context(patch.object(
+            handle_runner, "_resolve_project",
+            lambda owner, repo: (PROJECT_OF.get(repo, ""), str(tmp_path))))
         # Takes the project: QA settings are per project.
         stack.enter_context(patch("app.config.get_handle_config", side_effect=lambda project: config))
         stack.enter_context(patch("app.config.get_branch_prefix", return_value="koan/"))
@@ -171,10 +177,10 @@ def pipeline(tmp_path, monkeypatch):
             cfg = config
             instance_dir = str(instance)
 
-            def run(self, url=ISSUE, after=""):
+            def run(self, url=ISSUE, after="", project="proj"):
                 context = f"after:{after}" if after else ""
                 self.outcome = handle_runner.run_handle(
-                    url, str(tmp_path), "proj", str(instance), context)
+                    url, str(tmp_path), project, str(instance), context)
                 return self.outcome.ok, self.outcome.summary
 
             def set_triage(self, output):
@@ -1161,6 +1167,49 @@ class TestTransferredIssue:
         pipeline.run()
         assert pipeline.record()["requester"] == "lead"
 
+    def _transferred(self, pipeline, **record):
+        """A record left under OLD_ISSUE, whose thread GitHub now serves as ISSUE."""
+        handle_state.update_record(
+            pipeline.instance_dir, OLD_ISSUE, project="appproj", requester="dev", **record)
+        pipeline.github.comments.append({
+            "author": BOT, "created_at": 0.5,
+            "body": f"Taking it.\n\n<!-- koan-handle: {OLD_ISSUE} -->"})
+        pipeline.github.redirects[OLD_ISSUE] = ISSUE
+
+    def test_pull_request_stays_in_the_repository_it_was_opened_in(self, pipeline):
+        self._transferred(
+            pipeline, phase="ci", pr_url="https://github.com/owner/app/pull/40", pr_number="40",
+            branch="koan/implement-33", ci_polls=0, ci_empty_checks=0)
+        pipeline.run(after="ci")
+        assert pipeline.record()["phase"] == "reviewing"
+        assert set(pipeline.github.pr_calls) == {("owner", "app", "40")}
+        assert "/review https://github.com/owner/app/pull/40 --force" in pipeline.pending()[0]
+
+    def test_tick_queued_before_the_transfer_moves_to_the_new_project(self, pipeline):
+        self._transferred(pipeline, phase="planning", phase_started_at=100.0)
+        pipeline.github.comments.append(_plan_comment("None — ready to implement.", 200.0))
+        pipeline.run(url=OLD_ISSUE, after="plan", project="appproj")
+        assert pipeline.record()["project"] == "proj"
+        assert pipeline.pending()[0].startswith(f"- [project:proj] /implement {ISSUE}")
+
+    def test_second_transfer_before_the_next_comment_is_followed(self, pipeline):
+        middle = "https://github.com/owner/mid/issues/9"
+        self._transferred(pipeline, phase="planning")
+        pipeline.github.redirects[OLD_ISSUE] = middle
+        handle_state.rename_record(pipeline.instance_dir, OLD_ISSUE, middle)
+        pipeline.github.redirects = {OLD_ISSUE: ISSUE, middle: ISSUE}
+        pipeline.run(after="plan")
+        assert handle_state.load_record(pipeline.instance_dir, middle) == {}
+        assert pipeline.record()["moved_from"] == [[OLD_ISSUE, "appproj"], [middle, "appproj"]]
+
+    def test_poke_while_a_step_queued_before_the_transfer_runs_is_busy(self, pipeline):
+        self._transferred(pipeline, phase="planning", phase_started_at=100.0)
+        (Path(pipeline.instance_dir) / "missions.md").write_text(EMPTY_MISSIONS.replace(
+            "## Pending\n", f"## Pending\n\n- [project:appproj] /handle {OLD_ISSUE} after:plan\n"))
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+        assert "Already on it" in pipeline.github.posted[-1]
+
     def test_quoted_marker_cannot_take_over_another_record(self, pipeline):
         """The marker names a record GitHub does not redirect to this issue."""
         handle_state.update_record(pipeline.instance_dir, OLD_ISSUE, phase="done", requester="lead")
@@ -1178,7 +1227,7 @@ class TestTransferredIssue:
         pipeline.github.redirects[OLD_ISSUE] = ISSUE
         pipeline.github.comments.insert(0, {
             "author": "reporter", "created_at": 0.5,
-            "body": f"<!-- koan-handle: {OLD_ISSUE} -->",
+            "body": f"Mine.\n\n<!-- koan-handle: {OLD_ISSUE} -->",
         })
         pipeline.run()
         assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE)["phase"] == "done"

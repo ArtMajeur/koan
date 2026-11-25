@@ -131,12 +131,28 @@ def rename_record(instance_dir: str, old_url: str, new_url: str, **changes) -> d
     def _change(data: dict) -> bool:
         if not data.get(old_url) or data.get(new_url):
             return False
-        record.update(data.pop(old_url), **changes)
+        moved = data.pop(old_url)
+        record.update(moved, **changes)
+        # A tick queued before the move, and the bot's earlier comments, still
+        # name the former URL (and project).
+        record["moved_from"] = [
+            *(moved.get("moved_from") or []), [old_url, moved.get("project", "")]]
         data[new_url] = record
         return True
 
     _modify(instance_dir, _change)
     return record
+
+
+def find_moved(instance_dir: str, url: str) -> str:
+    """The key of the record known by *url*, now or before a move ("" if none)."""
+    if not _state_path(instance_dir).exists():
+        return ""
+    for key, record in _read_all(instance_dir).items():
+        if key == url or any(
+                former == url for former, _ in (isinstance(record, dict) and record.get("moved_from")) or ()):
+            return key
+    return ""
 
 
 def find_issue_for_pr(instance_dir: str, pr_url: str) -> Optional[str]:

@@ -1114,13 +1114,16 @@ def _bot_assigned_itself(notification: dict, config: dict) -> bool:
     from app.github import api as gh_api
 
     bot = get_github_nickname(config).lower()
-    subject_url = notification.get("subject", {}).get("url", "")
+    subject = notification.get("subject", {})
+    subject_url = subject.get("url", "")
     api_prefix = "https://api.github.com/"
-    if not (bot and subject_url.startswith(api_prefix)):
+    # /handle only assigns the bot to issues, and a pull request's own URL
+    # (pulls/<n>) has no timeline endpoint.
+    if not (bot and subject.get("type") == "Issue" and subject_url.startswith(api_prefix)):
         return False
     try:
         raw = gh_api(
-            f"{subject_url[len(api_prefix):]}/timeline",
+            f"{subject_url[len(api_prefix):]}/timeline?per_page=100",
             jq='.[] | select(.event == "assigned") | [.assignee.login, .actor.login] | @tsv',
             extra_args=["--paginate"], timeout=30,
         )

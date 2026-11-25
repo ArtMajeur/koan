@@ -96,6 +96,26 @@ class Tick:
         return f"{self.owner}/{self.repo}"
 
     @property
+    def pr_ref(self) -> Tuple[str, str]:
+        """Owner and repository of the pull request.
+
+        The issue's own, unless the issue was transferred: the PR stays where
+        it was opened, and pairing its number with the issue's new repository
+        would address somebody else's pull request.
+        """
+        from app.github_url_parser import parse_github_url
+
+        url = self.record.get("pr_url")
+        if not url:
+            return self.owner, self.repo
+        owner, repo, _kind, _number = parse_github_url(url)
+        return owner, repo
+
+    @property
+    def pr_full_repo(self) -> str:
+        return "/".join(self.pr_ref)
+
+    @property
     def mention(self) -> str:
         return _mention(self.requester)
 
@@ -200,15 +220,8 @@ def _follow_transfer(tick: Tick) -> dict:
     """
     from app.github_url_parser import parse_github_url
 
-    old_url = next((
-        key for key in (
-            marked_key(c.get("body") or "") for c in reversed(tick.comments)
-            if gh.same_login(c.get("author") or "", tick.bot)
-        ) if key
-    ), "")
-    if not old_url or handle_state.same_pr_url(old_url, tick.issue_url):
-        return {}
-    if not handle_state.load_record(tick.instance_dir, old_url):
+    old_url = _former_record_key(tick)
+    if not old_url:
         return {}
     try:
         owner, repo, _kind, number = parse_github_url(old_url)
@@ -221,8 +234,50 @@ def _follow_transfer(tick: Tick) -> dict:
     if not handle_state.same_pr_url(now_at, tick.issue_url):
         return {}
     print(f"[handle] {old_url} was transferred to {tick.issue_url}", file=sys.stderr)
+    _run_under_the_new_repository(tick)
     return handle_state.rename_record(
         tick.instance_dir, old_url, tick.issue_url, project=tick.project_name)
+
+
+def _former_record_key(tick: Tick) -> str:
+    """The key of the record the bot's comments on this thread point to ("" if none).
+
+    A comment names the key the record had when it was posted; the record may
+    have moved since (a second transfer before the next comment), so the key
+    is looked up among the URLs each record was known by.
+    """
+    seen = set()
+    for comment in reversed(tick.comments):
+        named = marked_key(comment.get("body") or "")
+        if not named or named in seen or not gh.same_login(comment.get("author") or "", tick.bot):
+            continue
+        seen.add(named)
+        key = handle_state.find_moved(tick.instance_dir, named)
+        if key and not handle_state.same_pr_url(key, tick.issue_url):
+            return key
+    return ""
+
+
+def _run_under_the_new_repository(tick: Tick) -> None:
+    """Switch the tick to the project of the issue's new repository.
+
+    A tick queued before the transfer still carries the old repository's
+    project: planning or implementing there would work in the wrong checkout.
+    """
+    from app.config import get_handle_config
+
+    name, path = _resolve_project(tick.owner, tick.repo)
+    if name and name != tick.project_name:
+        tick.project_name, tick.project_path = name, path
+        tick.config = get_handle_config(name)
+
+
+def _resolve_project(owner: str, repo: str) -> Tuple[str, str]:
+    """``(name, path)`` of the project configured for a repository, or two ""."""
+    from app.github_skill_helpers import resolve_project_for_repo
+
+    path, name = resolve_project_for_repo(repo, owner=owner)
+    return name or "", path or ""
 
 
 def _after_tag(context: str) -> str:
@@ -320,12 +375,12 @@ def _pr(tick: Tick) -> dict:
     if tick.pr_view is None:
         # A pull-request pipeline is its own PR, known before the record names it.
         number = tick.number if tick.is_pr else tick.pr_number
-        tick.pr_view = gh.pr_info(tick.owner, tick.repo, number)
+        tick.pr_view = gh.pr_info(*tick.pr_ref, number)
     return tick.pr_view
 
 
 def _head_ci(tick: Tick) -> str:
-    return handle_ci.ci_at_head(tick.record["branch"], tick.full_repo, _pr(tick)["headRefOid"])
+    return handle_ci.ci_at_head(tick.record["branch"], tick.pr_full_repo, _pr(tick)["headRefOid"])
 
 
 # -- triage and plan ----------------------------------------------------------
@@ -466,7 +521,7 @@ def _await_ci(tick: Tick) -> Result:
     if tick.config["ready_before_ci"] and _pr(tick).get("isDraft"):
         # Some CIs skip draft PRs: without this the loop would review and fix
         # a PR whose CI never ran.
-        gh.mark_ready(tick.owner, tick.repo, tick.pr_number)
+        gh.mark_ready(*tick.pr_ref, tick.pr_number)
         tick.pr_view["isDraft"] = False
     tick.save(phase="ci", ci_outcome=None, ci_polls=0, ci_empty_checks=0,
               phase_started_at=time.time(), resume=None)
@@ -476,8 +531,8 @@ def _await_ci(tick: Tick) -> Result:
 def _unapproved_data_changes(tick: Tick) -> List[dict]:
     """PR files touching data (migrations, scripts, existing translations) not yet approved."""
     head = _pr(tick)["headRefOid"]
-    files = gh.pr_files(tick.owner, tick.repo, tick.pr_number)
-    total, head_after = gh.pr_changed_files(tick.owner, tick.repo, tick.pr_number)
+    files = gh.pr_files(*tick.pr_ref, tick.pr_number)
+    total, head_after = gh.pr_changed_files(*tick.pr_ref, tick.pr_number)
     if head_after != head:
         # A push landed during the check: the listing may mix two heads, so it
         # proves nothing. Fail closed; the retry reads the new head.
@@ -515,7 +570,7 @@ def _after_ci(tick: Tick) -> Result:
         return _confirm_no_ci(tick, state)
     ci_check = is_ci_check_enabled()
     if ci_check and (state == "pending" or (state == "failure" and _ci_fix_may_continue(tick))):
-        handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.full_repo)
+        handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.pr_full_repo)
         return _waiting(tick, "ci")
     if state == "pending":
         return _poll_ci(tick, state)
@@ -579,7 +634,7 @@ def _after_review(tick: Tick) -> Result:
 def _review_sidecar(tick: Tick) -> Path:
     """The review runner's findings file; named with the PR URL's casing."""
     folder = Path(tick.instance_dir) / ".review-findings"
-    wanted = f"{tick.owner}_{tick.repo}_{tick.pr_number}.json"
+    wanted = f"{'_'.join(tick.pr_ref)}_{tick.pr_number}.json"
     if folder.is_dir():
         for path in folder.iterdir():
             if path.name.lower() == wanted.lower():
@@ -602,9 +657,9 @@ def _qa_or_finish(tick: Tick) -> Result:
     if tick.record.get("phase") == "qa" and _recheck_pending(tick, "qa-wait"):
         return _waiting(tick, "qa")  # a poke must not add a re-check or burn a wait
     number = tick.pr_number
-    shas = (_pr(tick)["headRefOid"], gh.merge_commit_sha(tick.owner, tick.repo, number))
+    shas = (_pr(tick)["headRefOid"], gh.merge_commit_sha(*tick.pr_ref, number))
     environment = qa["preview_environment"].replace("{pr}", number)
-    status, url = gh.preview_status(tick.owner, tick.repo, environment, shas)
+    status, url = gh.preview_status(*tick.pr_ref, environment, shas)
     if status == "ready":
         command = (
             f"{qa['command']} {url} Verify the fix for {tick.issue_url} on this preview "
@@ -633,7 +688,7 @@ def _after_qa(tick: Tick) -> Result:
     """Hand off; say whether the QA run left a report (it may have timed out)."""
     # A pull-request pipeline's own thread is the one this tick already read.
     comments = tick.comments if tick.is_pr else gh.fetch_comments(
-        tick.owner, tick.repo, tick.pr_number)
+        *tick.pr_ref, tick.pr_number)
     since = tick.record.get("phase_started_at", 0)
     report = gh.latest_bot_comment(comments, tick.bot, since, match=lambda body: QA_MARKER in body)
     return _finish(tick, qa_note=render("qa_ran" if report else "qa_no_report"))
@@ -646,7 +701,7 @@ def _finish(tick: Tick, qa_note: str) -> Result:
     if flagged:
         return _gate_data_changes(tick, flagged)
     pr_url = tick.pr_url
-    gh.hand_off_pr(tick.owner, tick.repo, tick.pr_number, _reviewer(tick),
+    gh.hand_off_pr(*tick.pr_ref, tick.pr_number, _reviewer(tick),
                    is_draft=bool(_pr(tick).get("isDraft")))
     product = gh.is_team_member(tick.owner, tick.config["product_team"], tick.requester)
     _move_board(tick, "product_review" if product else "review")
@@ -734,8 +789,8 @@ def _replied_since_gate(tick: Tick) -> bool:
     threads = list(tick.comments)
     if tick.record.get("pr_number"):
         if not tick.is_pr:  # a pull-request pipeline's thread is tick.comments already
-            threads += gh.fetch_comments(tick.owner, tick.repo, tick.pr_number)
-        threads += gh.fetch_review_activity(tick.owner, tick.repo, tick.pr_number)
+            threads += gh.fetch_comments(*tick.pr_ref, tick.pr_number)
+        threads += gh.fetch_review_activity(*tick.pr_ref, tick.pr_number)
     return any(
         c.get("created_at", 0) > gated_at and not c.get("is_bot")
         and not gh.same_login(c.get("author") or "", tick.bot)
@@ -816,9 +871,18 @@ def _follow_up_pending(tick: Tick, phase: str) -> bool:
     path = Path(tick.instance_dir) / "missions.md"
     content = path.read_text() if path.exists() else ""
     return any(
-        is_duplicate_mission(content, handle_state.handle_entry(tick.project_name, tick.issue_url, a))
-        for a in _EXPECTED_AFTER[phase]
+        is_duplicate_mission(content, entry)
+        for a in _EXPECTED_AFTER[phase] for entry in _handle_entries(tick, a)
     )
+
+
+def _handle_entries(tick: Tick, after: str) -> List[str]:
+    """The `/handle … after:` lines a pending tick of this pipeline can read.
+
+    One queued before a transfer still names the issue's former URL and project.
+    """
+    known = [[tick.issue_url, tick.project_name], *(tick.record.get("moved_from") or [])]
+    return [handle_state.handle_entry(project, url, after) for url, project in known]
 
 
 def _recheck_pending(tick: Tick, after: str) -> bool:
@@ -829,10 +893,10 @@ def _recheck_pending(tick: Tick, after: str) -> bool:
     """
     if tick.after == after:
         return False
-    wanted = handle_state.handle_entry(tick.project_name, tick.issue_url, after)
+    wanted = _handle_entries(tick, after)
     for path in (Path(tick.instance_dir) / "events").glob("*.json"):
         try:
-            if json.loads(path.read_text()).get("mission", "").strip() == wanted:
+            if json.loads(path.read_text()).get("mission", "").strip() in wanted:
                 return True
         except (OSError, ValueError):
             continue

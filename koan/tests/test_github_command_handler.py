@@ -3769,7 +3769,7 @@ class TestTryAssignmentNotification:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         def _api(endpoint, **kwargs):
-            if endpoint.endswith("/timeline"):
+            if "/timeline" in endpoint:
                 if isinstance(timeline, Exception):
                     raise timeline
                 return timeline
@@ -3796,6 +3796,16 @@ class TestTryAssignmentNotification:
 
         assert "/implement" not in content
         assert assign_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+
+    def test_assign_on_a_pull_request_reads_no_timeline(self):
+        """A pull request's own URL has no timeline endpoint, and /handle never
+        assigns the bot to one."""
+        from app.github_command_handler import _bot_assigned_itself
+
+        notification = {"subject": {
+            "type": "PullRequest", "url": "https://api.github.com/repos/sukria/koan/pulls/9"}}
+        with patch("app.github.api", side_effect=AssertionError("no call expected")):
+            assert not _bot_assigned_itself(notification, {"github": {"nickname": "koan-bot"}})
 
     @pytest.mark.parametrize("timeline", [
         "koan-bot\tkoan-bot\nkoan-bot\tlead\n",  # a human re-assigned the bot afterwards
