@@ -126,6 +126,7 @@ _TEMPLATES = {
             "not handled: you are not allowed to command me on its repository"
         ),
         "prs_merged": "The pull requests of this issue are merged — nothing left to do:\n\n{prs}",
+        "pr_state_owned": "handled by the pipeline of {issue_url}, which it also closes",
         "pr_state_done": "ready for review",
         "pr_state_stopped": "closed or merged",
         "pr_state_fork": "not handled: it comes from a fork",
@@ -246,6 +247,7 @@ _TEMPLATES = {
         "prs_merged": (
             "Les pull requests de cette issue sont fusionnées — plus rien à faire :\n\n{prs}"
         ),
+        "pr_state_owned": "traitée par le pipeline de {issue_url}, qu'elle ferme aussi",
         "pr_state_done": "prête pour la revue",
         "pr_state_stopped": "fermée ou fusionnée",
         "pr_state_fork": "non traitée : elle vient d'un fork",

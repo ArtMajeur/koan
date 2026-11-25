@@ -78,6 +78,7 @@ class FakeGitHub:
         self.repo_calls = set()  # (owner, repo) of every other PR read or write
         self.linked = []  # open PRs GitHub lists as closing the issue (or the read's error)
         self.unauthorized_repos = set()  # where no one may command the bot
+        self.unreadable_pulls = set()  # PR URLs GitHub no longer serves
         self.pulls = set()  # PR URLs outside the issue's repository
         self.threads = {}  # (repo, number) → comments of such a PR
 
@@ -132,6 +133,8 @@ class FakeGitHub:
     def pr_info(self, owner, repo, number):
         self.pr_calls.append((owner, repo, number))
         pull = f"https://github.com/{owner}/{repo}/pull/{number}"
+        if pull in self.unreadable_pulls:
+            raise RuntimeError("gh: Could not resolve to a PullRequest")
         return {"state": self.pr_state, "headRefOid": HEAD, "isDraft": True,
                 "url": pull if pull in self.pulls else PR,
                 "headRefName": "feature/x", "isCrossRepository": self.cross_repository}
@@ -1355,6 +1358,62 @@ class TestLinkedPullRequests:
         pipeline.run()
         assert pipeline.record()["phase"] == "stopped"
         assert pipeline.pending() == [] and "merged" in pipeline.github.posted[-1]
+
+    def test_pr_owned_by_another_issues_pipeline_is_left_to_it(self, pipeline):
+        """The PR closes two issues; a tick for it would resume the other one's gate."""
+        other = "https://github.com/owner/repo/issues/9"
+        handle_state.update_record(
+            pipeline.instance_dir, other, phase="waiting_human", resume="data_change",
+            pr_url=APP_PR, pr_number="82", data_changes_pending=["migrations/1.py@s1"])
+        pipeline.github.linked = [_linked(APP_PR), _linked(API_PR)]
+        pipeline.run()
+        assert pipeline.queued() == [f"- [project:apiproj] /handle {API_PR}"]
+        assert pipeline.record()["prs"] == [API_PR]
+        assert self._pr_record(pipeline, APP_PR) == {}
+        assert other in pipeline.github.posted[-1]
+
+    def test_poker_without_rights_does_not_shrink_the_roll_up(self, pipeline):
+        self._delegated(pipeline, app="done", api="reviewing")
+        pipeline.github.unauthorized_repos = {"api"}
+        pipeline.run()
+        record = pipeline.record()
+        assert (record["phase"], record["prs"]) == ("delegated", [APP_PR, API_PR])
+        assert all("Every pull request" not in body for body in pipeline.github.posted)
+        assert "step: reviewing" in pipeline.github.posted[-1]
+
+    def test_poker_without_rights_wakes_no_gated_pr(self, pipeline):
+        self._delegated(pipeline, app="done", api="waiting_human")
+        pipeline.github.unauthorized_repos = {"api"}
+        pipeline.run()
+        assert pipeline.pending() == [] and pipeline.record()["prs"] == [APP_PR, API_PR]
+
+    def test_issue_whose_only_pr_is_refused_goes_on_to_triage(self, pipeline):
+        pipeline.github.linked = [_linked(API_PR)]
+        pipeline.github.unauthorized_repos = {"api"}
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning" and "prs" not in pipeline.record()
+
+    def test_handed_off_issue_with_a_pr_closed_meanwhile_only_reports(self, pipeline):
+        self._delegated(pipeline, app="done", api="stopped")
+        pipeline.run(after="prs")
+        pipeline.github.linked = [_linked(APP_PR)]
+        pipeline.run()
+        summaries = [body for body in pipeline.github.posted if "Every pull request" in body]
+        assert len(summaries) == 1 and pipeline.github.board_moves == ["Tech review"]
+        assert pipeline.record()["phase"] == "done"
+
+    def test_pr_that_can_no_longer_be_read_does_not_park_the_issue(self, pipeline):
+        self._delegated(pipeline, app="stopped", api="stopped")
+        pipeline.github.linked = []
+        pipeline.github.unreadable_pulls = {APP_PR, API_PR}
+        ok, _ = pipeline.run()
+        assert ok and pipeline.record()["phase"] == "planning"
+
+    def test_unreadable_links_after_implement_gate_as_no_pr(self, pipeline):
+        pipeline.seed(phase="implementing", phase_started_at=100.0)
+        pipeline.github.linked = RuntimeError("GraphQL: timeout")
+        ok, _ = pipeline.run(after="implement")
+        assert ok and pipeline.record()["resume"] == "implement"
 
     def test_requester_without_rights_on_a_prs_repo_starts_nothing_there(self, pipeline):
         pipeline.github.linked = [_linked(APP_PR), _linked(API_PR)]

@@ -193,18 +193,19 @@ def linked_prs(owner: str, repo: str, number: str) -> List[dict]:
     )) or {}
     try:
         nodes = data["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["nodes"]
-    except (KeyError, TypeError) as e:
+        return [
+            {
+                "url": pr["url"], "owner": pr["repository"]["owner"]["login"],
+                "repo": pr["repository"]["name"], "number": str(pr["number"]),
+                "author": (pr.get("author") or {}).get("login") or "",
+                "is_fork": bool(pr.get("isCrossRepository")), "branch": pr["headRefName"],
+                "updated_at": _epoch(pr["updatedAt"]),
+            }
+            for pr in nodes or [] if pr and pr.get("state") == "OPEN"
+        ]
+    except (KeyError, TypeError, ValueError) as e:
+        # A PR in a repository the token cannot read comes back with null fields.
         raise RuntimeError(f"unreadable linked pull requests of {owner}/{repo}#{number}") from e
-    return [
-        {
-            "url": pr["url"], "owner": pr["repository"]["owner"]["login"],
-            "repo": pr["repository"]["name"], "number": str(pr["number"]),
-            "author": (pr.get("author") or {}).get("login") or "",
-            "is_fork": bool(pr.get("isCrossRepository")), "branch": pr["headRefName"],
-            "updated_at": _epoch(pr["updatedAt"]),
-        }
-        for pr in nodes or [] if pr and pr.get("state") == "OPEN"
-    ]
 
 
 def find_open_pr(owner: str, repo: str, branch: str, bot: str) -> Optional[dict]:

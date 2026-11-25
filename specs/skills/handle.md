@@ -96,8 +96,12 @@ repositories it groups), or by several of them. The **linked pull requests** of 
 are the open PRs GitHub lists as closing it (`closedByPullRequestsReferences`: a closing
 keyword in the PR body, or the issue's *Development* links), whoever authored them. A PR
 from a fork, or in a repository no project is configured for, cannot be handled: it is
-named in the status comment and otherwise ignored. So is a PR in a repository where the
-requester may not command the bot: a poke on the issue starts no work there. When
+named in the status comment and otherwise ignored. So is a PR that another issue's own
+pipeline tracks (it closes both issues; that pipeline owns it), and a PR this issue does
+not track yet in a repository where the requester may not command the bot. Rights decide
+what a poke may **start**, never which PRs the issue **waits for**: a PR already in the
+issue's list stays in it, with its real state, whoever pokes. When none of the linked
+PRs can be the issue's, the issue goes on as it does without any (triage). When
 GitHub cannot list the linked PRs (a linked repository the token cannot read), triage and
 the PR an `/implement` opened go on as if there were none; a poke on a `delegated` issue
 fails instead (error gate), since "none" would there mean "start over".
@@ -131,7 +135,9 @@ fails instead (error gate), since "none" would there mean "start over".
   handed off, with nothing new to start, gets the status only: no second summary or
   board move. With no open linked PR left: if one of the issue's PRs is merged, the
   reply says so and the pipeline stops (a PR merged into a branch that does not close
-  the issue must not be implemented again); otherwise the issue starts over from triage.
+  the issue must not be implemented again; later pokes repeat it, and closing the issue
+  is how to end it); otherwise, or when its PRs can no longer be read, the issue starts
+  over from triage.
   On a PR: that PR's pipeline, as for any PR.
 - **Gates.** A delegated PR's gate, other than a data change, also reopens on a human
   reply written on the parent issue after the gate.
