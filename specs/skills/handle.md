@@ -365,7 +365,9 @@ the requester has read it.
   entities made inert, control characters removed. What the requester reads in the
   proposal is then all the issue will contain.
 - **Proposal.** The drafts are stored in the record (`proposal`: author, time, items) and
-  posted as one comment showing each title and body, with how to confirm. A new request
+  posted as one comment showing each title and body **as raw text**, in a code block the
+  draft cannot close, with how to confirm: rendered Markdown would hide part of what is
+  about to be opened (a link definition, an image's address). A new request
   replaces a pending proposal. A model failure, or an empty answer, posts nothing and is
   logged: the pre-check also passes on ordinary sentences, and nobody asked the bot to
   report on those.

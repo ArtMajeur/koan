@@ -1286,6 +1286,18 @@ class TestFollowUpIssues:
         assert all("would open" not in body and "couldn't" not in body
                    for body in pipeline.github.posted)
 
+    def test_proposal_shows_the_draft_as_raw_text(self, pipeline):
+        """Rendered Markdown would hide the link definition; a draft cannot close its block."""
+        self._poke(pipeline, self.ASK)
+        payload = {"follow_ups": [{"title": "The rest", "body": (
+            "See [the doc][d].\n\n```\ncode\n```\n\n````\nmore\n````\n\n[d]: https://evil.example")}]}
+        pipeline.set_request(f"```json\n{json.dumps(payload)}\n```")
+        pipeline.run()
+        shown = pipeline.github.posted[0]
+        body = self._proposal(pipeline)["items"][0]["body"]
+        assert f"`````text\nThe rest\n\n{body}\n`````" in shown
+        assert "[d]: https://evil.example" in body
+
     def test_at_most_three_drafts(self, pipeline):
         self._proposed(pipeline, "A", "B", "C", "D", "E")
         assert [item["title"] for item in self._proposal(pipeline)["items"]] == ["A", "B", "C"]

@@ -460,10 +460,19 @@ def _propose_follow_ups(tick: Tick) -> None:
 
 
 def _render_drafts(items: List[dict]) -> str:
-    return "\n\n".join(
-        f"**{n}. {item['title']}**\n\n<details><summary>Body</summary>\n\n{item['body']}\n\n</details>"
-        for n, item in enumerate(items, 1)
-    )
+    """Each draft as raw text: what is confirmed is what was read, to the character.
+
+    Rendered Markdown hides things (a link definition, an image's address); a
+    code block shows them. Its fence is longer than any backtick run in the
+    draft, so the draft cannot close it.
+    """
+    blocks = []
+    for n, item in enumerate(items, 1):
+        text = f"{item['title']}\n\n{item['body']}"
+        longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * max(3, longest + 1)
+        blocks.append(f"**Issue {n}** (title, then body):\n\n{fence}text\n{text}\n{fence}")
+    return "\n\n".join(blocks)
 
 
 def _confirm_follow_ups(tick: Tick) -> Optional[Result]:
