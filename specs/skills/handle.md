@@ -100,12 +100,16 @@ the issue was parked at):
   to this issue, the record is renamed to the new URL (one locked write) and the tick
   goes on from the stored phase.
 - **The project follows the issue.** The record, and the tick that renames it, switch to
-  the project configured for the issue's new repository (a tick queued before the
-  transfer still carries the old one); with no project for that repository, the tick's.
+  the project configured for the issue's new repository; with no project for that
+  repository, the tick's. Every later tick on a moved record does the same switch, so
+  one queued before the transfer never plans or implements in the old checkout.
 - **The pull request does not move.** A PR stays in the repository it was opened in:
   every read and write of the pipeline's PR uses the repository of the stored `pr_url`,
-  never the issue's new one. The pipeline's `handle:` settings are those of the new
-  project.
+  never the issue's new one. The steps that work on the PR (`/review`, `/rebase --fix`,
+  the `## CI` entry, the QA command) are queued under the project of the PR's
+  repository, whose checkout holds its branch, and `ready_before_ci`, `data_guard` and
+  `qa` are read from that project. The ticks, `/plan` and `/implement` stay with the
+  issue's project.
 - **Former URLs are kept** in the record (`moved_from`, with the project of the time): a
   marker naming one of them still finds the record after a second transfer, and a
   follow-up tick or re-check queued under one of them still counts as pending.

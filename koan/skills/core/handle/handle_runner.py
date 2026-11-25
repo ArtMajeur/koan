@@ -116,6 +116,26 @@ class Tick:
         return "/".join(self.pr_ref)
 
     @property
+    def pr_project(self) -> str:
+        """The project whose checkout holds the pull request's branch.
+
+        Steps that work on the PR (review, fix, CI fixes, QA) run there: in the
+        issue's project they would fetch and push the branch in another
+        repository.
+        """
+        if self.pr_ref == (self.owner, self.repo):
+            return self.project_name
+        return _resolve_project(*self.pr_ref)[0] or self.project_name
+
+    @property
+    def pr_config(self) -> dict:
+        """The `handle:` settings that describe the PR's repository (CI, data, QA)."""
+        from app.config import get_handle_config
+
+        project = self.pr_project
+        return self.config if project == self.project_name else get_handle_config(project)
+
+    @property
     def mention(self) -> str:
         return _mention(self.requester)
 
@@ -208,6 +228,10 @@ def _load_tick(
     tick.comments = gh.fetch_comments(owner, repo, number)
     if not tick.record:
         tick.record = _follow_transfer(tick)
+    elif tick.record.get("moved_from"):
+        # Another tick renamed the record first; this one may still carry the
+        # project it was queued under before the transfer.
+        _run_under_the_new_repository(tick)
     tick.requester = _resolve_requester(tick)
     return tick
 
@@ -518,7 +542,7 @@ def _await_ci(tick: Tick) -> Result:
     flagged = _unapproved_data_changes(tick)
     if flagged:
         return _gate_data_changes(tick, flagged)
-    if tick.config["ready_before_ci"] and _pr(tick).get("isDraft"):
+    if tick.pr_config["ready_before_ci"] and _pr(tick).get("isDraft"):
         # Some CIs skip draft PRs: without this the loop would review and fix
         # a PR whose CI never ran.
         gh.mark_ready(*tick.pr_ref, tick.pr_number)
@@ -538,7 +562,7 @@ def _unapproved_data_changes(tick: Tick) -> List[dict]:
         # proves nothing. Fail closed; the retry reads the new head.
         raise RuntimeError(f"PR head moved during the data-change check ({head} → {head_after})")
     approved = set(tick.record.get("data_changes_approved") or ())
-    flagged = handle_data_guard.flagged_files(files, tick.config["data_guard"])
+    flagged = handle_data_guard.flagged_files(files, tick.pr_config["data_guard"])
     flagged += handle_data_guard.truncated_listing(len(files), total, head)
     return [f for f in flagged if handle_data_guard.approval_key(f) not in approved]
 
@@ -570,7 +594,7 @@ def _after_ci(tick: Tick) -> Result:
         return _confirm_no_ci(tick, state)
     ci_check = is_ci_check_enabled()
     if ci_check and (state == "pending" or (state == "failure" and _ci_fix_may_continue(tick))):
-        handle_ci.register(tick.instance_dir, tick.project_name, tick.record, tick.pr_full_repo)
+        handle_ci.register(tick.instance_dir, tick.pr_project, tick.record, tick.pr_full_repo)
         return _waiting(tick, "ci")
     if state == "pending":
         return _poll_ci(tick, state)
@@ -614,7 +638,7 @@ def _queue_review(tick: Tick) -> Result:
     flagged = _unapproved_data_changes(tick)
     if flagged:
         return _gate_data_changes(tick, flagged)
-    return _queue(tick, f"/review {tick.pr_url} --force", "review", "reviewing")
+    return _queue(tick, f"/review {tick.pr_url} --force", "review", "reviewing", tick.pr_project)
 
 
 def _after_review(tick: Tick) -> Result:
@@ -644,14 +668,14 @@ def _review_sidecar(tick: Tick) -> Path:
 
 def _queue_fix(tick: Tick) -> Result:
     tick.save(review_round=tick.record.get("review_round", 0) + 1)
-    return _queue(tick, f"/rebase {tick.pr_url} --fix", "fix", "fixing")
+    return _queue(tick, f"/rebase {tick.pr_url} --fix", "fix", "fixing", tick.pr_project)
 
 
 # -- QA and hand-off ------------------------------------------------------------
 
 
 def _qa_or_finish(tick: Tick) -> Result:
-    qa = tick.config["qa"]
+    qa = tick.pr_config["qa"]
     if not (qa["command"] and qa["preview_environment"]):
         return _finish(tick, qa_note="")
     if tick.record.get("phase") == "qa" and _recheck_pending(tick, "qa-wait"):
@@ -666,14 +690,14 @@ def _qa_or_finish(tick: Tick) -> Result:
             f"of {tick.pr_url}; post the report as a comment on "
             f"{tick.pr_url} whose first line is {QA_MARKER}"
         )
-        return _queue(tick, command, "qa", "qa_running")
+        return _queue(tick, command, "qa", "qa_running", tick.pr_project)
     if status == "failed":
         return _finish(tick, qa_note=render("qa_preview_failed"))
     return _wait_for_preview(tick)
 
 
 def _wait_for_preview(tick: Tick) -> Result:
-    qa = tick.config["qa"]
+    qa = tick.pr_config["qa"]
     # The budget is per wait: a count left by an earlier round must not shorten
     # (or skip) the wait for this head's preview.
     waits = tick.record.get("qa_waits", 0) if tick.record.get("phase") == "qa" else 0
@@ -828,8 +852,15 @@ def _stop_on_closed_issue(tick: Tick) -> Result:
     return True, f"{tick.issue_url} is closed; pipeline stopped"
 
 
-def _queue(tick: Tick, command: str, after: str, phase: str) -> Result:
-    handle_state.queue_step(tick.instance_dir, tick.project_name, tick.issue_url, command, after)
+def _queue(tick: Tick, command: str, after: str, phase: str, project: str = "") -> Result:
+    """Queue a step and the tick that follows it.
+
+    *project* is where the step runs when that is not the issue's project (a
+    step on a PR that stayed in another repository); the tick stays with the issue.
+    """
+    handle_state.queue_step(
+        tick.instance_dir, tick.project_name, tick.issue_url, command, after,
+        step_project=project or tick.project_name)
     # `step` lets the agent loop tell this mission from an operator's own.
     tick.save(phase=phase, phase_started_at=time.time(), resume=None, step=command)
     tick.note = f"{command.split()[0]} queued"
@@ -881,7 +912,7 @@ def _handle_entries(tick: Tick, after: str) -> List[str]:
 
     One queued before a transfer still names the issue's former URL and project.
     """
-    known = [[tick.issue_url, tick.project_name], *(tick.record.get("moved_from") or [])]
+    known = [(tick.issue_url, tick.project_name), *handle_state.former_keys(tick.record)]
     return [handle_state.handle_entry(project, url, after) for url, project in known]
 
 

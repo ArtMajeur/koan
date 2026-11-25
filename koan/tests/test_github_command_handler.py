@@ -3769,7 +3769,7 @@ class TestTryAssignmentNotification:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         def _api(endpoint, **kwargs):
-            if "/timeline" in endpoint:
+            if endpoint.endswith("/timeline?per_page=100"):
                 if isinstance(timeline, Exception):
                     raise timeline
                 return timeline

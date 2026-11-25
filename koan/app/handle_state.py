@@ -149,10 +149,22 @@ def find_moved(instance_dir: str, url: str) -> str:
     if not _state_path(instance_dir).exists():
         return ""
     for key, record in _read_all(instance_dir).items():
-        if key == url or any(
-                former == url for former, _ in (isinstance(record, dict) and record.get("moved_from")) or ()):
+        if key == url or any(former == url for former, _project in former_keys(record)):
             return key
     return ""
+
+
+def former_keys(record: dict) -> list:
+    """The ``(url, project)`` pairs a record was known by before each move.
+
+    Entries of another shape (a hand-edited file) are skipped: one bad record
+    must not fail the lookup for every issue.
+    """
+    moved = record.get("moved_from") if isinstance(record, dict) else None
+    return [
+        (entry[0], entry[1]) for entry in (moved if isinstance(moved, list) else [])
+        if isinstance(entry, (list, tuple)) and len(entry) == 2
+    ]
 
 
 def find_issue_for_pr(instance_dir: str, pr_url: str) -> Optional[str]:
@@ -250,8 +262,12 @@ def handle_entry(project_name: str, issue_url: str, after: str = "") -> str:
 
 def queue_step(
     instance_dir: str, project_name: str, issue_url: str, command: str, after: str,
+    step_project: Optional[str] = None,
 ) -> bool:
     """Queue *command* followed by the ``/handle`` tick that waits for it.
+
+    The tick runs under *project_name*; the step too, unless *step_project*
+    names the project whose checkout it needs.
 
     Both lines go in one locked write so the run loop never sees one without
     the other. The follow-up's ``after:`` tag makes its dedup signature differ
@@ -264,7 +280,8 @@ def queue_step(
 
     step_queued, _ = insert_pending_missions(
         Path(instance_dir) / "missions.md",
-        [mission_line(project_name, command), handle_entry(project_name, issue_url, after)],
+        [mission_line(project_name if step_project is None else step_project, command),
+         handle_entry(project_name, issue_url, after)],
     )
     return step_queued
 
