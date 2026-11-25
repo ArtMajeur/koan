@@ -359,9 +359,11 @@ the requester has read it.
   not newer than it is ignored. The mark survives a pipeline that starts over.
 - **Draft.** One single-turn model call under the read-only role (`review_mode`) is given
   the issue, its thread and the request, and answers with a JSON list of issues (title,
-  body), at most 3, empty unless the request explicitly asks for a new issue. `@`
-  mentions and `#123` / `GH-123` references are defused in the drafts, and control
-  characters removed.
+  body), at most 3, empty unless the request explicitly asks for a new issue. The
+  drafts are defused before anything else sees them: `@` mentions and `#123` / `GH-123`
+  references (in code spans too), HTML comments removed, raw HTML tags and character
+  entities made inert, control characters removed. What the requester reads in the
+  proposal is then all the issue will contain.
 - **Proposal.** The drafts are stored in the record (`proposal`: author, time, items) and
   posted as one comment showing each title and body, with how to confirm. A new request
   replaces a pending proposal. A model failure, or an empty answer, posts nothing and is

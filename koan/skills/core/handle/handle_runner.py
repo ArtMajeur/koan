@@ -50,6 +50,13 @@ _CREATE_WORD_RE = re.compile(
 # `@<bot> handle confirm` opens a pending draft (see _confirm_follow_ups).
 _CONFIRM_RE = re.compile(r"\s*confirm(?:e|er|ed)?\b", re.IGNORECASE)
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# What a draft could hide from the person confirming it, or slip past the
+# defusing below: HTML comments (invisible once rendered), raw tags (they can
+# collapse or restyle text), and entities (GitHub decodes "&#64;" to "@").
+_HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+_HTML_TAG_START_RE = re.compile(r"<(?=[A-Za-z/!?])")
+_ENTITY_START_RE = re.compile(r"&(?=#|[A-Za-z][A-Za-z0-9]*;)")
+_ISSUE_REF_RE = re.compile(r"#(?=\d)")
 # "GH-123" is a reference too.
 _GH_REF_RE = re.compile(r"\bGH-(?=\d)", re.IGNORECASE)
 # Every "@name", code spans and emphasis ("_@name_") included: guessing
@@ -512,15 +519,19 @@ def _follow_up_body(tick: Tick, item: dict) -> str:
 
 
 def _defused(text: str) -> str:
-    """Keep a drafted issue from reaching anyone else: its text comes from the thread.
+    """Make a draft show all it holds, and reach nobody but its reader.
 
-    No mention notifies, no bare ``#123`` or ``GH-123`` back-links another
-    issue, and no control character reaches the command that opens it.
+    Its text comes from the thread. What its requester confirms must be what
+    they saw: no HTML comment, no raw tag, no entity GitHub would decode into
+    something else. No mention notifies and no ``#123`` or ``GH-123``
+    back-links another issue, in code spans too: guessing where Markdown ends
+    one would leave a way through. No control character reaches the command
+    that opens the issue.
     """
-    from app.github import escape_issue_refs
-
-    text = _CONTROL_RE.sub("", text)
-    return _GH_REF_RE.sub("GH-\u200b", escape_issue_refs(_MENTION_RE.sub("@\u200b", text)))
+    text = _HTML_COMMENT_RE.sub("", _CONTROL_RE.sub("", text))
+    text = _ENTITY_START_RE.sub("&\u200b", _HTML_TAG_START_RE.sub("<\u200b", text))
+    text = _ISSUE_REF_RE.sub("#\u200b", _MENTION_RE.sub("@\u200b", text))
+    return _GH_REF_RE.sub("GH-\u200b", text)
 
 
 def _run_request(tick: Tick, request: str) -> str:

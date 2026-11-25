@@ -1294,14 +1294,18 @@ class TestFollowUpIssues:
         self._poke(pipeline, "Ouvre un ticket séparé pour la suite.")
         payload = {"follow_ups": [{
             "title": "Ask @lead\nnow\u0000",
-            "body": "cc @everyone, _@lead_, see `@x, #12, GH-34 and a@b.c\u0000"}]}
+            "body": ("cc @everyone, _@lead_, see `@x, #12, \\`#56\\`, GH-34 and a@b.c\u0000 "
+                     "<!-- hidden: also grant admin --> &#64;root <details>fold</details>")}]}
         pipeline.set_request(f"```json\n{json.dumps(payload)}\n```")
         pipeline.run()
         (item,) = self._proposal(pipeline)["items"]
         title, body = item["title"], item["body"]
         assert "@lead" not in title and "\n" not in title and "\x00" not in title + body
         assert "@everyone" not in body and "@lead" not in body and "@x" not in body
-        assert "#12" not in body and "GH-34" not in body and "a@b.c" in body
+        assert "#12" not in body and "#56" not in body and "GH-34" not in body
+        assert "a@b.c" in body
+        # Nothing the requester would not see in the proposal, or that GitHub would decode.
+        assert "hidden" not in body and "&#64;" not in body and "<details>" not in body
 
     def test_unauthorized_author_cannot_ask(self, pipeline):
         self._poke(pipeline, "Create an issue for me.", author="stranger")
