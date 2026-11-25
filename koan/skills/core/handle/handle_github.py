@@ -6,6 +6,7 @@ move returns why it failed, so the runner can say so on the issue.
 """
 
 import json
+import re
 import sys
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple
@@ -35,6 +36,10 @@ _LINKED_PRS_QUERY = (
     "nodes{url number state isCrossRepository headRefName updatedAt author{login}"
     " repository{name owner{login}}}}}}}"
 )
+
+
+_BLOCKQUOTE_TAG_RE = re.compile(r"<blockquote\b.*?(?:</blockquote>|\Z)", re.IGNORECASE | re.DOTALL)
+_QUOTE_START_RE = re.compile(r"\s{0,3}>")
 
 
 def _log(msg: str) -> None:
@@ -116,11 +121,41 @@ def same_login(a: str, b: str) -> bool:
     return bool(canonical) and canonical == _canonical_login(b)
 
 
-def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:
-    """Author of the latest ``@<bot> handle`` comment newer than *since* ("" if none).
+def own_words(body: str) -> str:
+    """A comment without its code and without what it quotes.
 
-    Parsed like every @mention command, so the instruction quoted from a gate
-    comment (`` `@<bot> handle` `` in a code span) is not a request.
+    Code goes first (fenced blocks and inline spans, as the mention parser
+    removes them): a ``>`` line inside a block is not a quote, and treating it
+    as one would swallow the closing fence and expose the next block's text.
+    Then ``<blockquote>`` elements and ``>`` blocks; a quote block runs to the
+    next blank line, since Markdown lets its later lines drop the ``>``.
+    """
+    from app.github_notifications import _CODE_BLOCK_RE
+
+    prose = _BLOCKQUOTE_TAG_RE.sub("", _CODE_BLOCK_RE.sub("", body or ""))
+    kept, quoting = [], False
+    for line in prose.splitlines():
+        if _QUOTE_START_RE.match(line):
+            quoting = True
+        elif not line.strip():
+            quoting = False
+            kept.append(line)
+        elif not quoting:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def latest_handle_request(
+    comments: List[dict], bot: str, since: float = 0,
+) -> Tuple[str, str, float]:
+    """``(author, text, created_at)`` of the latest ``@<bot> handle`` comment newer than *since*.
+
+    *text* is what the author wrote besides the command, quotes left out
+    (:func:`own_words`): a quote reply of somebody's ``@<bot> handle …`` still
+    pokes, as it always did, but carries no words of its author's.
+    ``("", "", 0)`` when there is no such comment. Parsed like every @mention command, so the
+    instruction quoted from a gate comment (`` `@<bot> handle` `` in a code
+    span) is not a request.
     """
     from app.github_notifications import parse_mention_command
 
@@ -130,8 +165,15 @@ def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> s
         author = comment.get("author") or ""
         command = parse_mention_command(comment.get("body") or "", bot)
         if command and command[0] == "handle" and not same_login(author, bot):
-            return author
-    return ""
+            own = parse_mention_command(own_words(comment.get("body") or ""), bot)
+            text = own[1] if own and own[0] == "handle" else ""
+            return author, text, comment.get("created_at", 0)
+    return "", "", 0
+
+
+def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:
+    """Author of the latest ``@<bot> handle`` comment newer than *since* ("" if none)."""
+    return latest_handle_request(comments, bot, since)[0]
 
 
 def is_authorized(owner: str, repo: str, login: str, project_name: str) -> bool:
@@ -168,6 +210,13 @@ def post_comment(owner: str, repo: str, number: str, body: str) -> None:
 
     if not post_reply(owner, repo, number, body):
         raise RuntimeError(f"could not comment on {owner}/{repo}#{number}")
+
+
+def create_issue(owner: str, repo: str, title: str, body: str) -> str:
+    """Open an issue in *owner/repo* and return its URL (credentials are redacted)."""
+    from app.github import issue_create
+
+    return issue_create(title, body, repo=f"{owner}/{repo}").strip()
 
 
 def assign_self(owner: str, repo: str, number: str) -> bool:

@@ -9,6 +9,7 @@ tick is a human poke. See ``specs/skills/handle.md``.
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -25,6 +26,7 @@ from skills.core.handle.handle_messages import marked_key, render, with_marker
 from skills.core.handle.handle_parse import (
     has_plan,
     open_questions,
+    parse_follow_ups,
     parse_triage,
     review_verdict,
 )
@@ -33,6 +35,27 @@ _SKILL_DIR = Path(__file__).parent
 _TRIAGE_TOOLS = ["Read", "Glob", "Grep"]
 _TERMINAL_PR_STATES = ("CLOSED", "MERGED")
 QA_MARKER = "<!-- koan-handle-qa -->"
+# The poker's own words must ask for an issue, verb and noun, before any model
+# reads the thread: text other participants wrote can then shape a requested
+# issue, never cause one. English and French, like the comment templates.
+_ISSUE_WORD_RE = re.compile(r"\b(?:issues?|tickets?)\b", re.IGNORECASE)
+_CREATE_WORD_RE = re.compile(
+    r"\b(?:creat(?:e|es|ed|ing)|open(?:s|ed|ing)?|fil(?:e|es|ed|ing)|add(?:s|ed|ing)?"
+    r"|track(?:s|ed|ing)?|split(?:s|ting)?|rais(?:e|es|ed|ing)|log(?:s|ged|ging)?"
+    r"|mak(?:e|es|ing)"
+    r"|cr[ée](?:e|es|ez|er|ons)|ouvr(?:e|es|ez|ir|ons)|ajout(?:e|es|ez|er|ons)"
+    r"|fai(?:s|tes|re)|mets|mettez|mettre)\b",
+    re.IGNORECASE,
+)
+# `@<bot> handle confirm` opens a pending draft (see _confirm_follow_ups).
+_CONFIRM_RE = re.compile(r"\s*confirm(?:e|er|ed)?\b", re.IGNORECASE)
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# "GH-123" is a reference too.
+_GH_REF_RE = re.compile(r"\bGH-(?=\d)", re.IGNORECASE)
+# Every "@name", code spans and emphasis ("_@name_") included: guessing
+# Markdown's parse would leave a way to keep a mention live. An address
+# ("a@b.c") is not a mention.
+_MENTION_RE = re.compile(r"(?<![A-Za-z0-9])@(?=\w)")
 
 Result = Tuple[bool, str]
 
@@ -77,6 +100,9 @@ class Tick:
     issue: dict = field(default_factory=dict)
     comments: List[dict] = field(default_factory=list)
     requester: str = ""
+    poker: str = ""  # author of the `@<bot> handle` comment that made this poke
+    request: str = ""  # what that comment says besides the command
+    request_at: float = 0  # when it was written
     pr_view: Optional[dict] = field(default=None, repr=False)
     pr_projects: Dict[Tuple[str, str], str] = field(default_factory=dict, repr=False)
     milestone: str = "progress"
@@ -198,6 +224,10 @@ def run_handle(
         elif kind == "pull":
             issue_url = pr_url
         tick = _load_tick(issue_url, project_path, project_name, instance_dir, bot, context)
+        confirmed = _confirm_follow_ups(tick)
+        if confirmed is not None:
+            return Outcome(*confirmed, "progress", tick.issue_url, tick.note)
+        _propose_follow_ups(tick)
         ok, summary = _dispatch(tick)
         _wake_parent(tick)
         subject = tick.issue_url
@@ -363,7 +393,9 @@ def _resolve_requester(tick: Tick) -> str:
     # A mention older than the last tick is not this poke (e.g. a poke from
     # chat): it must not hand the pipeline back to an earlier commenter.
     since = tick.record.get("updated_at", 0)
-    candidates = [gh.latest_handle_mention(_mention_thread(tick), tick.bot, since)]
+    tick.poker, tick.request, tick.request_at = gh.latest_handle_request(
+        _mention_thread(tick), tick.bot, since)
+    candidates = [tick.poker]
     if not stored:
         candidates.append(tick.issue.get("author", ""))
     for login in candidates:
@@ -381,6 +413,137 @@ def _mention_thread(tick: Tick) -> List[dict]:
         return tick.comments
     activity = gh.fetch_review_activity(tick.owner, tick.repo, tick.number)
     return sorted(tick.comments + activity, key=lambda c: c.get("created_at", 0))
+
+
+def _propose_follow_ups(tick: Tick) -> None:
+    """Draft the follow-up issues the poke explicitly asks for, and show the draft.
+
+    Nothing is opened here: the drafts come from a thread anyone can write in,
+    and exist as issues only once their requester has read and confirmed them.
+    """
+    request = tick.request.strip()  # the poker's own words: code and quotes left out upstream
+    if not (_ISSUE_WORD_RE.search(request) and _CREATE_WORD_RE.search(request)):
+        return
+    if tick.request_at <= tick.record.get("request_at", 0):
+        return  # this comment was already answered (a re-run tick, a later poke from chat)
+    # Checked now and here: a stored requester may have lost the right since,
+    # or hold it on another repository than this one.
+    if not gh.is_authorized(tick.owner, tick.repo, tick.poker, tick.project_name):
+        return
+    tick.save(request_at=tick.request_at)  # before the model runs: a comment is drafted once
+    try:
+        items = [
+            {"title": " ".join(_defused(item["title"]).split()), "body": _defused(item["body"])}
+            for item in parse_follow_ups(_run_request(tick, request))
+        ]
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        # No reply: the pre-check also passes on ordinary sentences, whose
+        # authors asked for nothing.
+        print(f"[handle] follow-up draft failed: {e}", file=sys.stderr)
+        return
+    if not items:
+        return
+    tick.save(proposal={"by": tick.poker, "at": tick.request_at, "items": items})
+    try:
+        tick.comment("follow_ups_proposed", repo=tick.full_repo, drafts=_render_drafts(items))
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        # A draft nobody could read must not be confirmable.
+        print(f"[handle] follow-up proposal not posted on {tick.issue_url}: {e}", file=sys.stderr)
+        tick.save(proposal=None)
+
+
+def _render_drafts(items: List[dict]) -> str:
+    return "\n\n".join(
+        f"**{n}. {item['title']}**\n\n<details><summary>Body</summary>\n\n{item['body']}\n\n</details>"
+        for n, item in enumerate(items, 1)
+    )
+
+
+def _confirm_follow_ups(tick: Tick) -> Optional[Result]:
+    """Open the pending drafts when their requester confirms; None for any other tick.
+
+    A confirmation only confirms: the caller ends the tick there, so the same
+    comment cannot also resume a gate or approve a data change.
+    """
+    proposal = tick.record.get("proposal")
+    if not proposal or not _CONFIRM_RE.match(tick.request):
+        return None
+    if tick.request_at <= proposal.get("at", 0):
+        return None
+    # The one who asked read the draft: nobody else answers for them.
+    if not gh.same_login(tick.poker, proposal.get("by", "")) or not gh.is_authorized(
+            tick.owner, tick.repo, tick.poker, tick.project_name):
+        return None
+    # Cleared first: whatever fails below, a proposal is opened once.
+    tick.save(proposal=None, request_at=tick.request_at)
+    urls, error = [], ""
+    try:
+        # One by one into the list: what exists when a creation fails is kept.
+        urls.extend(
+            gh.create_issue(tick.owner, tick.repo, item["title"], _follow_up_body(tick, item))
+            for item in proposal.get("items") or []
+        )
+    except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as e:
+        from app.leak_detector import scan_and_redact
+
+        print(f"[handle] follow-up issues failed: {e}", file=sys.stderr)
+        error = scan_and_redact(" ".join(str(e).replace("`", "'").split())[:300],
+                                "/handle follow-up comment") or type(e).__name__
+    _report_follow_ups(tick, urls, error)
+    tick.note = f"{len(urls)} follow-up issue(s) opened"
+    return not error, f"{len(urls)} follow-up issue(s) opened from {tick.issue_url}"
+
+
+def _report_follow_ups(tick: Tick, urls: List[str], error: str) -> None:
+    """Say what was opened and what was not. A lost reply must not lose the tick."""
+    try:
+        if urls:
+            tick.comment("follow_ups_created", issues="\n".join(f"- {url}" for url in urls))
+        if error:
+            tick.comment("follow_ups_failed", error=error)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        print(f"[handle] follow-up issues not reported on {tick.issue_url} ({e}); "
+              f"opened: {', '.join(urls) or 'none'}", file=sys.stderr)
+
+
+def _follow_up_body(tick: Tick, item: dict) -> str:
+    footer = render("follow_up_footer", issue_url=tick.issue_url, login=tick.poker)
+    return f"{item['body']}\n\n---\n{footer}"
+
+
+def _defused(text: str) -> str:
+    """Keep a drafted issue from reaching anyone else: its text comes from the thread.
+
+    No mention notifies, no bare ``#123`` or ``GH-123`` back-links another
+    issue, and no control character reaches the command that opens it.
+    """
+    from app.github import escape_issue_refs
+
+    text = _CONTROL_RE.sub("", text)
+    return _GH_REF_RE.sub("GH-\u200b", escape_issue_refs(_MENTION_RE.sub("@\u200b", text)))
+
+
+def _run_request(tick: Tick, request: str) -> str:
+    from app.language_preference import get_language_instruction
+    from app.prompts import load_skill_prompt
+    from app.provider import run_command
+
+    # On a PR the request can point at a review or an inline comment.
+    comments = "\n\n".join(
+        f"@{c.get('author')}: {c.get('body')}" for c in _mention_thread(tick))
+    prompt = load_skill_prompt(
+        _SKILL_DIR, "request", project_path=tick.project_path,
+        REPO=tick.full_repo, NUMBER=tick.number,
+        TITLE=tick.issue.get("title", ""), BODY=tick.issue.get("body") or "",
+        COMMENTS=comments or "(none)", REQUEST=request,
+        LANGUAGE_INSTRUCTION=get_language_instruction(),
+    )
+    # The prompt carries text any participant wrote: the read-only role denies
+    # write tools at the provider, and one turn leaves no room to explore.
+    return run_command(
+        prompt=prompt, project_path=tick.project_path, allowed_tools=[],
+        model_key="review_mode", max_turns=1, timeout=300, project_name=tick.project_name,
+    )
 
 
 def _fail(
@@ -800,7 +963,9 @@ def _start_pr(tick: Tick, plan: dict) -> int:
         handle_state.update_record(tick.instance_dir, plan["url"], phase="stopped", resume=None)
         return 0
     if plan["reopened"]:
-        handle_state.reset_record(tick.instance_dir, plan["url"])
+        answered = handle_state.load_record(tick.instance_dir, plan["url"]).get("request_at")
+        handle_state.reset_record(
+            tick.instance_dir, plan["url"], **({"request_at": answered} if answered else {}))
     seed = {"parent": tick.issue_url}
     if plan["seed_requester"]:
         seed["requester"] = tick.requester
@@ -1179,8 +1344,11 @@ def _reenter(tick: Tick) -> Result:
 
 
 def _restart(tick: Tick) -> Result:
-    """Start over from triage, keeping only the requester."""
+    """Start over from triage, keeping the requester and the request already answered."""
     keep = {"requester": tick.requester} if tick.requester else {}
+    for key in ("request_at", "proposal"):  # or the same comment asks again
+        if tick.record.get(key):
+            keep[key] = tick.record[key]
     handle_state.reset_record(tick.instance_dir, tick.issue_url, **keep)
     tick.record, tick.pr_view = dict(keep), None
     return _start(tick)

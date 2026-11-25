@@ -333,6 +333,60 @@ state) — it never asserts green from an earlier signal.
 - With no authorized mention (started from chat), the issue author if authorized;
   otherwise nobody is mentioned and no review is requested.
 
+## Follow-up issues on request
+
+The pipeline is a fixed state machine: what a comment says never changes its path. One
+request is honored, because splitting work off an issue is how a human keeps the
+pipeline's own issue small: **opening follow-up issues**. It takes two comments from the
+same person: the request, which only produces a draft, and a confirmation, which opens
+exactly what was drafted. Nothing a model wrote from the thread exists as an issue until
+the requester has read it.
+
+### Request → proposal
+
+- **Who and when.** Only on a human poke, from the text of the latest `@<bot> handle`
+  comment since the previous tick. Its author must be authorized on the tick's
+  repository **at that moment**: being the stored requester is not enough. Chained ticks,
+  older comments and other participants' comments never draft anything.
+- **Their own words.** Code (fenced blocks and inline spans) is removed from the comment
+  first, then what it quotes: `>` blocks, to the next blank line, and `<blockquote>`
+  elements. Removing code first matters: a `>` line inside a code block is not a quote,
+  and reading it as one would unbalance the fences and expose the next block's text.
+- **Pre-check.** The remaining text must contain a creation verb (create, open, file, add,
+  track, split, raise, log, make; créer, ouvrir, ajouter, faire, mettre) and "issue" or
+  "ticket". Otherwise no model runs.
+- **Once.** The comment's time is stored (`request_at`) before the model runs; a comment
+  not newer than it is ignored. The mark survives a pipeline that starts over.
+- **Draft.** One single-turn model call under the read-only role (`review_mode`) is given
+  the issue, its thread and the request, and answers with a JSON list of issues (title,
+  body), at most 3, empty unless the request explicitly asks for a new issue. `@`
+  mentions and `#123` / `GH-123` references are defused in the drafts, and control
+  characters removed.
+- **Proposal.** The drafts are stored in the record (`proposal`: author, time, items) and
+  posted as one comment showing each title and body, with how to confirm. A new request
+  replaces a pending proposal. A model failure, or an empty answer, posts nothing and is
+  logged: the pre-check also passes on ordinary sentences, and nobody asked the bot to
+  report on those.
+- **Then the tick goes on** with its phase as usual: a request adds a proposal, it does
+  not replace the step the poke resumes. The comment is a `@<bot> handle` like any
+  other: at a gate it answers the gate, a data-change gate included.
+
+### Confirmation → issues
+
+- **What confirms.** A human poke whose own words begin with `confirm` (`@<bot> handle
+  confirm`), from **the author of the pending proposal**, still authorized on the
+  repository. Anyone else's `confirm` is an ordinary poke, and so is a `confirm` with no
+  proposal pending.
+- **A confirmation only confirms.** The tick opens the issues and stops: it does not
+  resume a gate, start a fix round or approve a data change. This is the one human poke
+  that does not move the pipeline.
+- **What is opened** is the stored draft, never the proposal comment's text nor a new
+  model answer. The proposal is cleared before the first creation, so it is opened once;
+  issues are created one by one in the issue's own repository through `issue_create`
+  (credentials redacted), each ending with a link back. The reply lists those that
+  exist, then the error that stopped the rest, if any. A reply that cannot be posted
+  does not fail the tick (the opened URLs are logged).
+
 ## Chaining contract
 
 - **Continuation without self-mention.** The follow-up tick is inserted right after the
@@ -468,7 +522,21 @@ resumes once someone has replied in either thread.
 
 ## Known debt / watch-outs
 
-- Triage emits a JSON verdict but has no golden-dataset eval yet.
+- Triage emits a JSON verdict but has no golden-dataset eval yet; neither does the
+  follow-up draft call.
+- A follow-up request phrased without a listed verb and "issue" or "ticket" drafts
+  nothing, silently; one the model reads as not asking for an issue too.
+- A follow-up draft is written by a model from a thread any participant wrote in, and a
+  quote the comment does not mark as one (an e-mail reply's "On … wrote:" text) reads as
+  the requester's own words. Neither can open an issue: the requester sees the draft and
+  confirms it. Full URLs in a draft are kept, so a confirmed issue can back-link
+  another thread.
+- Only the latest `@<bot> handle` comment since the previous tick is read: a second one
+  posted before the tick runs, by anyone, replaces a request or a confirmation made in
+  the first. Ask or confirm again.
+- A request or confirmation written on a PR that an issue's pipeline owns is not seen (the
+  tick reads the issue's thread); use the issue.
+- A proposal does not expire: it stays pending until confirmed or replaced.
 - Triage's Read/Glob/Grep are not path-scoped to the checkout; redaction covers known
   token formats only, not arbitrary file contents. The tool list is the `allowed_tools`
   convention `/ask`, `/explain` and `/plan` share: a pre-approval, not a denial — with

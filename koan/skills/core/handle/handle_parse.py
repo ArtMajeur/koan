@@ -4,9 +4,10 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 VERDICTS = ("go", "needs_human", "not_a_bug")
+MAX_FOLLOW_UPS = 3
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _COMMENT_FOOTER = "\n---\n"
@@ -52,6 +53,32 @@ def parse_triage(output: str) -> Optional[dict]:
         "summary": summary,
         "questions": [str(q).strip() for q in questions if str(q).strip()],
     }
+
+
+def parse_follow_ups(output: str) -> List[dict]:
+    """Return the ``{title, body}`` issues the request call asks to open.
+
+    Takes the last fenced ``json`` block, drops entries without a title or a
+    body, and keeps at most ``MAX_FOLLOW_UPS``. A malformed answer opens nothing.
+    """
+    blocks = _JSON_BLOCK_RE.findall(output or "")
+    if not blocks:
+        return []
+    try:
+        data = json.loads(blocks[-1])
+    except json.JSONDecodeError:
+        return []
+    items = data.get("follow_ups") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    follow_ups = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title, body = str(item.get("title") or "").strip(), str(item.get("body") or "").strip()
+        if title and body:
+            follow_ups.append({"title": title, "body": body})
+    return follow_ups[:MAX_FOLLOW_UPS]
 
 
 def _plan_text(comment_body: str) -> str:

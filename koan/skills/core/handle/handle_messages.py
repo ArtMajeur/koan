@@ -140,6 +140,19 @@ _TEMPLATES = {
         "pr_state_stopped": "closed or merged",
         "pr_state_fork": "not handled: it comes from a fork",
         "pr_state_no_project": "not handled: no project is configured for its repository",
+        "follow_ups_proposed": (
+            "{mention}Here is what I would open in `{repo}`. Nothing exists yet.\n\n"
+            "{drafts}\n\nComment `@{bot} handle confirm` to open them exactly as "
+            "written. To change them, ask again in other words: a new draft replaces "
+            "this one."
+        ),
+        "follow_ups_created": "{mention}As confirmed, I opened:\n\n{issues}",
+        "follow_ups_failed": (
+            "{mention}I couldn't open the follow-up issue you confirmed: `{error}`. "
+            "What I did open is listed above, if anything; open the rest by hand. "
+            "I carry on with this one."
+        ),
+        "follow_up_footer": "Follow-up of {issue_url}, opened at the request of {login}.",
         "state_closed": "closed",
         "state_merged": "merged",
     },
@@ -271,6 +284,19 @@ _TEMPLATES = {
         "pr_state_stopped": "fermée ou fusionnée",
         "pr_state_fork": "non traitée : elle vient d'un fork",
         "pr_state_no_project": "non traitée : aucun projet n'est configuré pour son dépôt",
+        "follow_ups_proposed": (
+            "{mention}Voici ce que j'ouvrirais dans `{repo}`. Rien n'existe encore.\n\n"
+            "{drafts}\n\nCommentez `@{bot} handle confirm` pour les ouvrir tels quels. "
+            "Pour les modifier, redemandez autrement : un nouveau brouillon remplace "
+            "celui-ci."
+        ),
+        "follow_ups_created": "{mention}Comme confirmé, j'ai ouvert :\n\n{issues}",
+        "follow_ups_failed": (
+            "{mention}Je n'ai pas pu ouvrir l'issue de suivi confirmée : `{error}`. "
+            "Ce que j'ai ouvert est listé ci-dessus, le cas échéant ; ouvrez le reste à "
+            "la main. Je continue sur celle-ci."
+        ),
+        "follow_up_footer": "Suite de {issue_url}, ouverte à la demande de {login}.",
         "state_closed": "fermée",
         "state_merged": "fusionnée",
     },
