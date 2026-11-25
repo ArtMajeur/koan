@@ -199,13 +199,28 @@ def run_handle(
             issue_url = pr_url
         tick = _load_tick(issue_url, project_path, project_name, instance_dir, bot, context)
         ok, summary = _dispatch(tick)
-        subject = tick.pr_url if tick.milestone == "handoff" else tick.issue_url
+        _wake_parent(tick)
+        subject = tick.issue_url
+        if tick.milestone == "handoff":  # a delegating issue has no PR of its own
+            subject = tick.record.get("pr_url") or tick.issue_url
         return Outcome(ok, summary, tick.milestone, subject, tick.note)
     # Runner boundary: any failure is reported on the issue, never swallowed.
     except Exception as e:
         target = (tick.owner, tick.repo, tick.number) if tick else (owner, repo, number)
         return Outcome(
             *_fail(tick, target, bot, instance_dir, tick.issue_url if tick else issue_url, e))
+
+
+def _wake_parent(tick: Tick) -> None:
+    """A delegated PR that stopped moving lets its issue re-read where its PRs stand."""
+    from app.utils import insert_pending_mission
+
+    parent = tick.record.get("parent")
+    if not parent or tick.milestone == "progress":
+        return
+    project = handle_state.load_record(tick.instance_dir, parent).get("project", "")
+    insert_pending_mission(
+        Path(tick.instance_dir) / "missions.md", handle_state.handle_entry(project, parent, "prs"))
 
 
 def _bot_login() -> str:
@@ -446,6 +461,10 @@ def _adopt_pr(tick: Tick) -> Result:
 
 
 def _triage(tick: Tick) -> Result:
+    # An issue that already has pull requests is not triaged or implemented again.
+    adopted = _adopt_linked_prs(tick, gh.linked_prs(tick.owner, tick.repo, tick.number))
+    if adopted:
+        return adopted
     try:
         output = _run_triage(tick)
     except (RuntimeError, subprocess.TimeoutExpired) as e:
@@ -543,11 +562,109 @@ def _after_implement(tick: Tick) -> Result:
 
     branch = f"{get_branch_prefix()}implement-{tick.number}"
     pr = gh.find_open_pr(tick.owner, tick.repo, branch, tick.bot)
+    since = tick.record.get("phase_started_at", 0)
     # A PR left by an earlier attempt does not prove this /implement worked.
-    if pr is None or pr["updated_at"] < tick.record.get("phase_started_at", 0):
-        return _gate(tick, "implement_no_pr", "implement")
+    if pr is None or pr["updated_at"] < since:
+        # The code may live in other repositories than the issue.
+        opened = [
+            p for p in gh.linked_prs(tick.owner, tick.repo, tick.number)
+            if gh.same_login(p["author"], tick.bot) and p["updated_at"] >= since
+        ]
+        return _adopt_linked_prs(tick, opened) or _gate(tick, "implement_no_pr", "implement")
     tick.save(pr_url=pr["url"], pr_number=str(pr["number"]), branch=branch, review_round=0)
     return _await_ci(tick)
+
+
+# -- an issue's linked pull requests ----------------------------------------------
+
+
+def _handleable(prs: List[dict]) -> Tuple[List[dict], List[dict]]:
+    """Split linked PRs into those a pipeline can drive and those it cannot.
+
+    The first get their ``project``; the others say why in ``skip``.
+    """
+    ok, skipped = [], []
+    for pr in prs:
+        project = "" if pr["is_fork"] else _resolve_project(pr["owner"], pr["repo"])[0]
+        if project:
+            ok.append({**pr, "project": project})
+        else:
+            skipped.append({**pr, "skip": "fork" if pr["is_fork"] else "no_project"})
+    return ok, skipped
+
+
+def _adopt_linked_prs(tick: Tick, prs: List[dict]) -> Optional[Result]:
+    """Carry on from the issue's pull requests; None when there is none to drive."""
+    ok, skipped = _handleable(prs)
+    if not ok:
+        return None
+    own_repo = (ok[0]["owner"].lower(), ok[0]["repo"].lower()) == (
+        tick.owner.lower(), tick.repo.lower())
+    if len(prs) == 1 and own_repo:
+        pr = ok[0]
+        tick.comment("pr_adopted", pr_url=pr["url"])
+        tick.save(pr_url=pr["url"], pr_number=pr["number"], branch=pr["branch"], review_round=0)
+        return _await_ci(tick)
+    return _delegate(tick, ok, skipped)
+
+
+def _delegate(tick: Tick, prs: List[dict], skipped: List[dict]) -> Result:
+    """Give each PR a pipeline of its own, under its repository's project."""
+    from app.utils import insert_pending_mission
+
+    lines = []
+    for pr in prs:
+        record = handle_state.load_record(tick.instance_dir, pr["url"])
+        phase = record.get("phase", "")
+        seed = {"parent": tick.issue_url}
+        if tick.requester and not record.get("requester"):
+            seed["requester"] = tick.requester
+        handle_state.update_record(tick.instance_dir, pr["url"], **seed)
+        # A PR on its way is left alone, and a handed-off one is not restarted:
+        # only a new PR, or one parked at a gate, gets a tick.
+        if phase in ("", "waiting_human"):
+            insert_pending_mission(
+                Path(tick.instance_dir) / "missions.md",
+                handle_state.handle_entry(pr["project"], pr["url"]))
+        lines.append(f"- {pr['url']}: {_pr_state(phase)}")
+    lines += [f"- {pr['url']}: {render('pr_state_' + pr['skip'])}" for pr in skipped]
+    tick.save(phase="delegated", prs=[pr["url"] for pr in prs], resume=None)
+    tick.comment("prs_status", prs="\n".join(lines))
+    tick.note = f"{len(prs)} pull request(s), each handled on its own thread"
+    return _after_prs(tick)
+
+
+def _pr_state(phase: str) -> str:
+    key = {"": "new", "waiting_human": "gate", "done": "done", "stopped": "stopped"}.get(phase)
+    return render(f"pr_state_{key}") if key else render("pr_state_running", phase=phase)
+
+
+def _delegated(tick: Tick) -> Result:
+    return _after_prs(tick) if tick.chained else _poke_delegated(tick)
+
+
+def _poke_delegated(tick: Tick) -> Result:
+    """A human `handle` on a delegating issue: look the PRs up again and report."""
+    ok, skipped = _handleable(gh.linked_prs(tick.owner, tick.repo, tick.number))
+    if ok:
+        return _delegate(tick, ok, skipped)
+    return _restart(tick)
+
+
+def _after_prs(tick: Tick) -> Result:
+    """Hand the issue off once every PR is handed off (a closed one does not hold it)."""
+    phases = {
+        url: handle_state.load_record(tick.instance_dir, url).get("phase", "")
+        for url in tick.record.get("prs") or []
+    }
+    ready = [url for url, phase in phases.items() if phase == "done"]
+    if not ready or any(phase not in ("done", "stopped") for phase in phases.values()):
+        return True, f"Waiting for the pull requests of {tick.issue_url}"
+    _move_board(tick, _review_column(tick))
+    tick.comment("prs_done", prs="\n".join(f"- {url}" for url in ready))
+    tick.save(phase="done", resume=None)
+    tick.milestone, tick.note = "handoff", "Every pull request is ready for review"
+    return True, f"{tick.issue_url}: {len(ready)} pull request(s) handed off"
 
 
 def _await_ci(tick: Tick) -> Result:
@@ -739,13 +856,17 @@ def _finish(tick: Tick, qa_note: str) -> Result:
     pr_url = tick.pr_url
     gh.hand_off_pr(*tick.pr_ref, tick.pr_number, _reviewer(tick),
                    is_draft=bool(_pr(tick).get("isDraft")))
-    product = gh.is_team_member(tick.owner, tick.config["product_team"], tick.requester)
-    _move_board(tick, "product_review" if product else "review")
+    _move_board(tick, _review_column(tick))
     state = _head_ci(tick)
     tick.comment("done", pr_url=pr_url, ci_note=_ci_note(state), qa_note=qa_note)
     tick.save(phase="done", resume=None)
     tick.milestone, tick.note = "handoff", _ci_chat_note(state)
     return True, f"{pr_url} handed off to @{tick.requester or '(nobody)'}"
+
+
+def _review_column(tick: Tick) -> str:
+    product = gh.is_team_member(tick.owner, tick.config["product_team"], tick.requester)
+    return "product_review" if product else "review"
 
 
 def _ci_note(state: str) -> str:
@@ -779,6 +900,8 @@ def _reviewer(tick: Tick) -> str:
 
 def _reenter(tick: Tick) -> Result:
     """A human `handle` on a finished pipeline: another round, or a fresh start."""
+    if tick.record.get("prs"):
+        return _stop_on_closed_issue(tick) if _issue_closed(tick) else _poke_delegated(tick)
     state = _pr(tick)["state"] if tick.record.get("pr_number") else "CLOSED"
     if state == "MERGED":
         tick.comment("merged", pr_url=tick.pr_url)
@@ -788,14 +911,19 @@ def _reenter(tick: Tick) -> Result:
     if _issue_closed(tick):
         return _stop_on_closed_issue(tick)
     if state == "CLOSED":
-        keep = {"requester": tick.requester} if tick.requester else {}
-        handle_state.reset_record(tick.instance_dir, tick.issue_url, **keep)
-        tick.record, tick.pr_view = dict(keep), None
-        return _start(tick)
+        return _restart(tick)
     tick.comment("new_round", pr_url=tick.pr_url)
     tick.save(review_round=0)
     _move_board(tick, "in_progress")
     return _queue_fix(tick)
+
+
+def _restart(tick: Tick) -> Result:
+    """Start over from triage, keeping only the requester."""
+    keep = {"requester": tick.requester} if tick.requester else {}
+    handle_state.reset_record(tick.instance_dir, tick.issue_url, **keep)
+    tick.record, tick.pr_view = dict(keep), None
+    return _start(tick)
 
 
 def _resume(tick: Tick) -> Result:
@@ -827,6 +955,11 @@ def _replied_since_gate(tick: Tick) -> bool:
         if not tick.is_pr:  # a pull-request pipeline's thread is tick.comments already
             threads += gh.fetch_comments(*tick.pr_ref, tick.pr_number)
         threads += gh.fetch_review_activity(*tick.pr_ref, tick.pr_number)
+    if tick.record.get("parent"):  # a delegated PR's gate is also answered on its issue
+        from app.github_url_parser import parse_github_url
+
+        owner, repo, _kind, number = parse_github_url(tick.record["parent"])
+        threads += gh.fetch_comments(owner, repo, number)
     return any(
         c.get("created_at", 0) > gated_at and not c.get("is_bot")
         and not gh.same_login(c.get("author") or "", tick.bot)
@@ -971,6 +1104,7 @@ _EXPECTED_AFTER: Dict[str, Tuple[str, ...]] = {
     "fixing": ("fix",),
     "qa": ("qa-wait",),
     "qa_running": ("qa",),
+    "delegated": ("prs",),
 }
 
 _PHASES: Dict[str, Callable[[Tick], Result]] = {
@@ -982,6 +1116,7 @@ _PHASES: Dict[str, Callable[[Tick], Result]] = {
     "fixing": _await_ci,
     "qa": _qa_or_finish,
     "qa_running": _after_qa,
+    "delegated": _delegated,
     "waiting_human": _resume,
 }
 

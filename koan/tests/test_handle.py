@@ -22,7 +22,10 @@ BOT = "koan-bot"
 ISSUE = "https://github.com/owner/repo/issues/7"
 PR = "https://github.com/owner/repo/pull/12"
 HEAD = "abc123"
-PROJECT_OF = {"repo": "proj", "app": "appproj"}  # repository → configured project
+APP_PR = "https://github.com/owner/app/pull/82"
+API_PR = "https://github.com/owner/api/pull/5"
+# repository → configured project
+PROJECT_OF = {"repo": "proj", "app": "appproj", "api": "apiproj"}
 EMPTY_MISSIONS = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
 AUDIT = (
     "**Assumptions audit (auto):** the following plan assumptions were flagged — "
@@ -73,10 +76,13 @@ class FakeGitHub:
         self.redirects = {}  # old issue URL → where GitHub now serves it
         self.pr_calls = []  # (owner, repo, number) of every PR read
         self.repo_calls = set()  # (owner, repo) of every other PR read or write
+        self.linked = []  # open PRs GitHub lists as closing the issue
+        self.pulls = set()  # PR URLs outside the issue's repository
+        self.threads = {}  # (repo, number) → comments of such a PR
 
     def install(self, enter):
         gh = handle_runner.gh
-        for name in ("fetch_issue", "fetch_comments", "fetch_review_activity",
+        for name in ("fetch_issue", "fetch_comments", "fetch_review_activity", "linked_prs",
                      "post_comment", "assign_self",
                      "find_open_pr", "pr_info", "hand_off_pr", "preview_status",
                      "merge_commit_sha", "is_team_member", "move_on_board", "is_authorized",
@@ -88,7 +94,13 @@ class FakeGitHub:
         self.repo_calls.add(tuple(full_repo.split("/")))
         return self.ci_state
 
+    def linked_prs(self, owner, repo, number):
+        return [dict(pr) for pr in self.linked]
+
     def fetch_issue(self, owner, repo, number):
+        pull = f"https://github.com/{owner}/{repo}/pull/{number}"
+        if pull in self.pulls:
+            return {**self.issue, "html_url": pull, "is_pr": True, "author": BOT, "state": "open"}
         url = f"https://github.com/{owner}/{repo}/issues/{number}"
         # With transfers in play, an issue GitHub does not redirect is itself.
         here = url if self.redirects else self.issue["html_url"]
@@ -97,6 +109,8 @@ class FakeGitHub:
     def fetch_comments(self, owner, repo, number):
         if self.fail_comments_with:
             raise self.fail_comments_with
+        if (repo, number) in self.threads:
+            return list(self.threads[(repo, number)])
         return list(self.pr_comments if number == "12" else self.comments)
 
     def fetch_review_activity(self, owner, repo, number):
@@ -114,7 +128,9 @@ class FakeGitHub:
 
     def pr_info(self, owner, repo, number):
         self.pr_calls.append((owner, repo, number))
-        return {"state": self.pr_state, "headRefOid": HEAD, "isDraft": True, "url": PR,
+        pull = f"https://github.com/{owner}/{repo}/pull/{number}"
+        return {"state": self.pr_state, "headRefOid": HEAD, "isDraft": True,
+                "url": pull if pull in self.pulls else PR,
                 "headRefName": "feature/x", "isCrossRepository": self.cross_repository}
 
     def pr_files(self, owner, repo, number):
@@ -215,6 +231,10 @@ def pipeline(tmp_path, monkeypatch):
             def pending(self):
                 from app.missions import parse_sections
                 return parse_sections((instance / "missions.md").read_text()).get("pending", [])
+
+            def queued(self):
+                """Pending mission lines without their queue timestamp."""
+                return [line.split(" ⏳")[0] for line in self.pending()]
 
             def missions(self):
                 return (instance / "missions.md").read_text()
@@ -1130,6 +1150,176 @@ class TestGateResume:
         pipeline.run()
         assert pipeline.record()["phase"] == "planning"
         assert f"/plan {ISSUE}" in pipeline.pending()[0]
+
+
+def _linked(url, author=BOT, is_fork=False, updated_at=200.0):
+    owner, repo, _, number = url.removeprefix("https://github.com/").split("/")
+    return {"url": url, "owner": owner, "repo": repo, "number": number, "author": author,
+            "is_fork": is_fork, "updated_at": updated_at, "branch": "koan/implement-7"}
+
+
+class TestLinkedPullRequests:
+    """An issue closed by PRs elsewhere, or by several, hands each PR its own pipeline."""
+
+    @pytest.fixture(autouse=True)
+    def _other_repos(self, pipeline):
+        pipeline.github.pulls = {APP_PR, API_PR}
+        pipeline.cfg["board"] = {"owner": "o", "number": 1, "in_progress": "Doing",
+                                 "review": "Tech review"}
+
+    def _pr_record(self, pipeline, url):
+        return handle_state.load_record(pipeline.instance_dir, url)
+
+    def _seed_pr(self, pipeline, url, **record):
+        handle_state.update_record(pipeline.instance_dir, url, parent=ISSUE, **record)
+
+    def _delegated(self, pipeline, **phases):
+        pipeline.github.linked = [_linked(APP_PR), _linked(API_PR)]
+        pipeline.seed(phase="delegated", prs=[APP_PR, API_PR])
+        self._seed_pr(pipeline, APP_PR, phase=phases["app"])
+        self._seed_pr(pipeline, API_PR, phase=phases["api"])
+
+    def test_pr_in_another_repo_is_delegated_instead_of_triaged(self, pipeline):
+        pipeline.github.linked = [_linked(APP_PR)]
+        pipeline.set_triage(RuntimeError("an issue with a PR is not triaged"))
+        ok, _ = pipeline.run()
+        assert ok
+        record = pipeline.record()
+        assert (record["phase"], record["prs"]) == ("delegated", [APP_PR])
+        pr = self._pr_record(pipeline, APP_PR)
+        assert (pr["parent"], pr["requester"]) == (ISSUE, "dev")
+        assert pipeline.queued() == [f"- [project:appproj] /handle {APP_PR}"]
+        assert APP_PR in pipeline.github.posted[-1]
+
+    def test_each_pr_runs_under_its_own_project(self, pipeline):
+        pipeline.github.linked = [_linked(APP_PR), _linked(API_PR, author="dev")]
+        pipeline.run()
+        assert pipeline.queued() == [
+            f"- [project:appproj] /handle {APP_PR}", f"- [project:apiproj] /handle {API_PR}"]
+
+    def test_one_pr_in_the_issues_own_repo_keeps_the_single_pipeline(self, pipeline):
+        pipeline.github.linked = [_linked(PR)]
+        pipeline.set_triage(RuntimeError("an issue with a PR is not triaged"))
+        pipeline.run()
+        record = pipeline.record()
+        assert (record["phase"], record["pr_url"], record["pr_number"]) == ("reviewing", PR, "12")
+        assert "prs" not in record
+        assert f"/review {PR} --force" in pipeline.pending()[0]
+
+    @pytest.mark.parametrize("unhandled", [
+        _linked(API_PR, is_fork=True),
+        _linked("https://github.com/owner/unknown/pull/3"),
+    ])
+    def test_pr_that_cannot_be_handled_is_named_not_queued(self, pipeline, unhandled):
+        pipeline.github.linked = [_linked(APP_PR), unhandled]
+        pipeline.run()
+        assert pipeline.record()["prs"] == [APP_PR]
+        assert len(pipeline.pending()) == 1
+        assert unhandled["url"] in pipeline.github.posted[-1]
+
+    def test_only_unhandleable_prs_leaves_the_issue_to_triage(self, pipeline):
+        pipeline.github.linked = [_linked(API_PR, is_fork=True)]
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+
+    def test_implement_that_opened_its_pr_elsewhere_is_delegated(self, pipeline):
+        pipeline.seed(phase="implementing", phase_started_at=100.0)
+        pipeline.github.linked = [_linked(APP_PR, updated_at=200.0)]
+        pipeline.run(after="implement")
+        assert pipeline.record()["phase"] == "delegated"
+
+    @pytest.mark.parametrize("pr", [
+        _linked(APP_PR, updated_at=50.0),  # left by an earlier attempt
+        _linked(APP_PR, author="dev"),     # not what /implement opened
+    ])
+    def test_implement_gates_without_a_fresh_pr_of_its_own(self, pipeline, pr):
+        pipeline.seed(phase="implementing", phase_started_at=100.0)
+        pipeline.github.linked = [pr]
+        pipeline.run(after="implement")
+        assert pipeline.record()["resume"] == "implement"
+
+    def test_roll_up_waits_for_the_last_pr(self, pipeline):
+        self._delegated(pipeline, app="done", api="reviewing")
+        pipeline.run(after="prs")
+        assert pipeline.record()["phase"] == "delegated"
+        assert pipeline.github.posted == [] and pipeline.github.board_moves == []
+
+    def test_roll_up_hands_the_issue_off_once_every_pr_is_ready(self, pipeline):
+        self._delegated(pipeline, app="done", api="done")
+        pipeline.run(after="prs")
+        assert pipeline.record()["phase"] == "done"
+        assert APP_PR in pipeline.github.posted[-1] and API_PR in pipeline.github.posted[-1]
+        assert "@dev:" in pipeline.github.posted[-1]
+        assert pipeline.github.board_moves == ["Tech review"]
+        assert pipeline.outcome.milestone == "handoff"
+
+    def test_closed_pr_does_not_hold_the_roll_up(self, pipeline):
+        self._delegated(pipeline, app="done", api="stopped")
+        pipeline.run(after="prs")
+        assert pipeline.record()["phase"] == "done"
+        assert API_PR not in pipeline.github.posted[-1]
+
+    def test_pr_hand_off_wakes_its_issue(self, pipeline):
+        pipeline.seed(phase="delegated", prs=[APP_PR])
+        self._seed_pr(pipeline, APP_PR, phase="reviewing", pr_url=APP_PR, pr_number="82",
+                      branch="b", requester="dev", phase_started_at=time.time() - 5)
+        _write_sidecar(pipeline.instance_dir, True, time.time() + 1, name="owner_app_82.json")
+        pipeline.run(url=APP_PR, after="review")
+        assert self._pr_record(pipeline, APP_PR)["phase"] == "done"
+        assert pipeline.queued() == [f"- [project:proj] /handle {ISSUE} after:prs"]
+
+    def test_pr_gate_wakes_its_issue(self, pipeline):
+        pipeline.seed(phase="delegated", prs=[APP_PR])
+        self._seed_pr(pipeline, APP_PR, phase="ci", pr_url=APP_PR, pr_number="82", branch="b",
+                      ci_polls=0, ci_empty_checks=0, ci_outcome="failure")
+        pipeline.github.ci_state = "failure"
+        pipeline.run(url=APP_PR, after="ci")
+        assert f"- [project:proj] /handle {ISSUE} after:prs" in pipeline.queued()
+
+    def test_pr_that_only_advances_does_not_wake_its_issue(self, pipeline):
+        pipeline.seed(phase="delegated", prs=[APP_PR])
+        self._seed_pr(pipeline, APP_PR)
+        pipeline.run(url=APP_PR)
+        assert self._pr_record(pipeline, APP_PR)["phase"] == "reviewing"
+        assert not any("after:prs" in line for line in pipeline.pending())
+
+    def test_poke_on_the_issue_reports_and_pokes_only_gated_prs(self, pipeline):
+        self._delegated(pipeline, app="done", api="waiting_human")
+        pipeline.run()
+        assert pipeline.queued() == [f"- [project:apiproj] /handle {API_PR}"]
+        assert APP_PR in pipeline.github.posted[-1] and API_PR in pipeline.github.posted[-1]
+        assert pipeline.record()["phase"] == "delegated"
+
+    def test_poke_on_a_handed_off_issue_restarts_no_pr(self, pipeline):
+        self._delegated(pipeline, app="done", api="done")
+        pipeline.run(after="prs")
+        pipeline.run()
+        assert pipeline.pending() == []
+        assert pipeline.record()["phase"] == "done"
+
+    def test_poke_adopts_a_pr_linked_later(self, pipeline):
+        pipeline.github.linked = [_linked(APP_PR), _linked(API_PR)]
+        pipeline.seed(phase="delegated", prs=[APP_PR])
+        self._seed_pr(pipeline, APP_PR, phase="reviewing")
+        pipeline.run()
+        assert pipeline.record()["prs"] == [APP_PR, API_PR]
+        assert pipeline.queued() == [f"- [project:apiproj] /handle {API_PR}"]
+
+    def test_poke_with_no_open_pr_left_starts_over(self, pipeline):
+        pipeline.seed(phase="delegated", prs=[APP_PR])
+        self._seed_pr(pipeline, APP_PR, phase="stopped")
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+        assert "prs" not in pipeline.record()
+
+    def test_reply_on_the_issue_reopens_a_delegated_prs_gate(self, pipeline):
+        pipeline.seed(phase="delegated", prs=[APP_PR])
+        self._seed_pr(pipeline, APP_PR, phase="waiting_human", resume="ci", gated_at=100.0,
+                      pr_url=APP_PR, pr_number="82", branch="b", requester="dev")
+        pipeline.github.comments.append(
+            {"author": "dev", "body": "Flaky test, go on.", "created_at": 150.0})
+        pipeline.run(url=APP_PR)
+        assert self._pr_record(pipeline, APP_PR)["phase"] == "reviewing"
 
 
 OLD_ISSUE = "https://github.com/owner/app/issues/33"

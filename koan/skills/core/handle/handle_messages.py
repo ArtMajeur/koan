@@ -107,6 +107,23 @@ _TEMPLATES = {
             "{mention}This pull request comes from a fork: I can't push fixes to its "
             "branch, so I won't handle it."
         ),
+        "pr_adopted": (
+            "{mention}{pr_url} already closes this issue: I take it through CI and review "
+            "instead of starting over."
+        ),
+        "prs_status": (
+            "{mention}This issue is closed by pull requests I handle one by one, each on "
+            "its own thread:\n\n{prs}\n\nComment `@{bot} handle` on a pull request to move "
+            "it, or here for this status."
+        ),
+        "prs_done": "{mention}Every pull request for this issue is ready for review:\n\n{prs}",
+        "pr_state_new": "starting (CI, then review)",
+        "pr_state_running": "in progress (step: {phase})",
+        "pr_state_gate": "waiting for a human, see its thread",
+        "pr_state_done": "ready for review",
+        "pr_state_stopped": "closed or merged",
+        "pr_state_fork": "not handled: it comes from a fork",
+        "pr_state_no_project": "not handled: no project is configured for its repository",
         "state_closed": "closed",
         "state_merged": "merged",
     },
@@ -196,6 +213,26 @@ _TEMPLATES = {
             "{mention}Cette pull request vient d'un fork : je ne peux pas pousser de "
             "correctifs sur sa branche, donc je ne la traite pas."
         ),
+        "pr_adopted": (
+            "{mention}{pr_url} ferme déjà cette issue : je l'emmène en CI et en revue "
+            "au lieu de repartir de zéro."
+        ),
+        "prs_status": (
+            "{mention}Cette issue est fermée par des pull requests que je traite une par "
+            "une, chacune dans son fil :\n\n{prs}\n\nCommentez `@{bot} handle` sur une pull "
+            "request pour la faire avancer, ou ici pour cet état."
+        ),
+        "prs_done": (
+            "{mention}Toutes les pull requests de cette issue sont prêtes pour la revue :"
+            "\n\n{prs}"
+        ),
+        "pr_state_new": "démarrage (CI, puis revue)",
+        "pr_state_running": "en cours (étape : {phase})",
+        "pr_state_gate": "en attente d'un humain, voir son fil",
+        "pr_state_done": "prête pour la revue",
+        "pr_state_stopped": "fermée ou fusionnée",
+        "pr_state_fork": "non traitée : elle vient d'un fork",
+        "pr_state_no_project": "non traitée : aucun projet n'est configuré pour son dépôt",
         "state_closed": "fermée",
         "state_merged": "fusionnée",
     },
