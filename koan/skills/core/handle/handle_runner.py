@@ -78,6 +78,7 @@ class Tick:
     comments: List[dict] = field(default_factory=list)
     requester: str = ""
     pr_view: Optional[dict] = field(default=None, repr=False)
+    pr_projects: Dict[Tuple[str, str], str] = field(default_factory=dict, repr=False)
     milestone: str = "progress"
     note: str = ""
 
@@ -121,11 +122,20 @@ class Tick:
 
         Steps that work on the PR (review, fix, CI fixes, QA) run there: in the
         issue's project they would fetch and push the branch in another
-        repository.
+        repository. With no project for the PR's repository there is nowhere
+        safe to run them: the tick fails (error gate) rather than fall back.
+        Resolved once per tick, so every step of a tick agrees.
         """
-        if self.pr_ref == (self.owner, self.repo):
+        ref = self.pr_ref
+        if ref == (self.owner, self.repo):
             return self.project_name
-        return _resolve_project(*self.pr_ref)[0] or self.project_name
+        if ref not in self.pr_projects:
+            self.pr_projects[ref] = _resolve_project(*ref)[0]
+        if not self.pr_projects[ref]:
+            raise RuntimeError(
+                f"no project is configured for {'/'.join(ref)}, where {self.record['pr_url']} "
+                "lives: its review, fixes and QA have no checkout to run in")
+        return self.pr_projects[ref]
 
     @property
     def pr_config(self) -> dict:
@@ -379,6 +389,8 @@ def _dispatch(tick: Tick) -> Result:
         # pipeline gated, a poke moved it on): acting on it would repeat work
         # no human asked for.
         return True, f"Stale after:{tick.after} tick ignored in phase {phase or 'new'}"
+    if tick.record.get("pr_url"):
+        tick.pr_project  # fails the tick before any step when the PR has no checkout
     if phase in ("done", "stopped"):
         return _reenter(tick)
     if not tick.chained and phase in handle_state.STEP_PHASES and _follow_up_pending(tick, phase):

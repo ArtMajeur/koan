@@ -108,7 +108,9 @@ the issue was parked at):
   never the issue's new one. The steps that work on the PR (`/review`, `/rebase --fix`,
   the `## CI` entry, the QA command) are queued under the project of the PR's
   repository, whose checkout holds its branch, and `ready_before_ci`, `data_guard` and
-  `qa` are read from that project. The ticks, `/plan` and `/implement` stay with the
+  `qa` are read from that project. When no project is configured for that repository,
+  the tick fails before doing anything (error gate, `retry`): the issue's checkout is
+  never used in its place. The ticks, `/plan` and `/implement` stay with the
   issue's project.
 - **Former URLs are kept** in the record (`moved_from`, with the project of the time): a
   marker naming one of them still finds the record after a second transfer, and a

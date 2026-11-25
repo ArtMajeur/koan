@@ -1215,6 +1215,26 @@ class TestTransferredIssue:
         assert set(pipeline.github.pr_calls) == {("owner", "app", "40")}
         assert pipeline.github.repo_calls == {("owner", "app")}
 
+    def test_data_guard_is_the_one_of_the_prs_repository(self, pipeline):
+        self._transferred(
+            pipeline, phase="fixing", pr_url="https://github.com/owner/app/pull/40",
+            pr_number="40", branch="koan/implement-33")
+        pipeline.github.files = [_file("migrations/Version1.php", status="added")]
+        pipeline.project_config["appproj"] = {**pipeline.cfg, "data_guard": {
+            "migrations": [], "scripts": [], "translations": []}}
+        pipeline.run(after="fix")
+        assert pipeline.record()["phase"] == "reviewing"
+
+    def test_pr_in_a_repository_without_a_project_stops_the_tick(self, pipeline):
+        self._transferred(
+            pipeline, phase="reviewing", pr_url="https://github.com/owner/gone/pull/40",
+            pr_number="40", branch="koan/implement-33", phase_started_at=1.0)
+        ok, _ = pipeline.run(after="review")
+        record = pipeline.record()
+        assert not ok and (record["phase"], record["resume"]) == ("waiting_human", "retry")
+        assert pipeline.pending() == [] and pipeline.github.pr_calls == []
+        assert "no project is configured for owner/gone" in pipeline.github.posted[-1]
+
     def test_ci_fixes_are_registered_under_the_prs_project(self, pipeline):
         self._transferred(
             pipeline, phase="ci", pr_url="https://github.com/owner/app/pull/40", pr_number="40",
