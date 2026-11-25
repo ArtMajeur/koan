@@ -1502,6 +1502,38 @@ class TestFollowUpIssues:
         pipeline.run()
         assert len(pipeline.github.created) == 1 and self._still_gated(pipeline)
 
+    def test_confirm_from_someone_without_rights_stops_nothing(self, pipeline):
+        """dev answers the gate; a stranger's `confirm` after it must not make the tick inert."""
+        self._data_gate(pipeline)
+        now = time.time()
+        pipeline.github.comments = [
+            {"author": "dev", "body": f"Checked, fine. @{BOT} handle", "created_at": now + 10},
+            {"author": "stranger", "body": f"@{BOT} handle confirm", "created_at": now + 11}]
+        pipeline.run()
+        assert pipeline.record()["data_changes_approved"] == ["migrations/1.py@s1"]
+        assert all("no draft of yours" not in body for body in pipeline.github.posted)
+
+    def test_real_poke_after_a_confirm_opens_the_draft_and_goes_on(self, pipeline):
+        self._proposed(pipeline)
+        self._data_gate(pipeline)
+        now = time.time()
+        pipeline.github.comments = [
+            {"author": "dev", "body": f"@{BOT} handle confirm", "created_at": now + 10},
+            {"author": "lead", "body": f"Migration reviewed. @{BOT} handle", "created_at": now + 11}]
+        pipeline.run()
+        assert len(pipeline.github.created) == 1
+        assert pipeline.record()["data_changes_approved"] == ["migrations/1.py@s1"]
+
+    def test_confirm_that_found_nothing_is_not_read_again(self, pipeline):
+        """Or the next poke from chat, which leaves no comment, would be inert too."""
+        self._data_gate(pipeline)
+        time.sleep(0.01)
+        self._confirm(pipeline, later=0.0)  # written before the tick that reads it, as in life
+        assert self._still_gated(pipeline)
+        time.sleep(0.01)
+        pipeline.run()  # from chat: same thread, nothing new
+        assert not self._still_gated(pipeline)
+
     def test_answer_that_starts_with_confirmed_is_not_a_confirmation(self, pipeline):
         """It answers the gate, as its author meant; the draft stays pending."""
         self._proposed(pipeline)

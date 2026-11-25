@@ -386,8 +386,12 @@ the requester has read it.
   the issues, or replies that no draft of the commenter's is pending (already opened,
   replaced, somebody else's), and stops: it does not resume a gate, start a fix round or
   approve a data change. Every `@<bot> handle` comment since the previous tick is
-  looked at, not only the latest: a comment posted after a `confirm`, by anyone, does
-  not turn that tick back into an ordinary poke.
+  looked at, not only the latest, and only those of people allowed to command the bot
+  count: a comment posted after a `confirm` by anyone else does not turn that tick back
+  into an ordinary poke, and somebody else's `confirm` neither confirms nor stops a
+  tick. When someone allowed poked for real **after** a `confirm`, the draft is opened
+  (if the `confirm` was valid) and the tick goes on for that poke. A `confirm` is
+  answered once: the next tick does not read it again.
 - **What is opened** is the stored draft, never the proposal comment's text nor a new
   model answer. The proposal is cleared before the first creation, so it is opened once;
   issues are created one by one in the issue's own repository (credentials redacted),

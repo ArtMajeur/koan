@@ -114,6 +114,7 @@ class Tick:
     request: str = ""  # what that comment says besides the command
     request_at: float = 0  # when it was written
     confirms: List[Tuple[str, float]] = field(default_factory=list)  # (author, time)
+    confirm_only: bool = False  # the latest authorized poke is a confirmation
     pr_view: Optional[dict] = field(default=None, repr=False)
     pr_projects: Dict[Tuple[str, str], str] = field(default_factory=dict, repr=False)
     milestone: str = "progress"
@@ -406,9 +407,7 @@ def _resolve_requester(tick: Tick) -> str:
     since = tick.record.get("updated_at", 0)
     pokes = gh.handle_requests(_mention_thread(tick), tick.bot, since)
     tick.poker, tick.request, tick.request_at = pokes[-1] if pokes else ("", "", 0)
-    # Every confirmation since the last tick, not only the latest comment's: a
-    # comment posted after it must not turn a confirmation into something else.
-    tick.confirms = [(who, at) for who, text, at in pokes if _CONFIRM_RE.fullmatch(text)]
+    _read_confirmations(tick, pokes)
     candidates = [tick.poker]
     if not stored:
         candidates.append(tick.issue.get("author", ""))
@@ -419,6 +418,25 @@ def _resolve_requester(tick: Tick) -> str:
             tick.save(requester=login)
             return login
     return stored
+
+
+def _read_confirmations(tick: Tick, pokes: List[Tuple[str, str, float]]) -> None:
+    """Find the `confirm` comments among the pokes since the last tick.
+
+    Only people allowed to command the bot count, for a confirmation as for
+    what follows one: somebody else's comment can neither confirm, nor make a
+    tick inert, nor turn a confirmation back into an ordinary poke.
+    """
+    if not any(_CONFIRM_RE.fullmatch(text) for _who, text, _at in pokes):
+        return
+    allowed = {}
+    for who, _text, _at in pokes:
+        if who not in allowed:
+            allowed[who] = gh.is_authorized(tick.owner, tick.repo, who, tick.project_name)
+    heard = [(who, text, at) for who, text, at in pokes if allowed[who]]
+    tick.confirms = [(who, at) for who, text, at in heard if _CONFIRM_RE.fullmatch(text)]
+    # A later poke by someone allowed is a real one: the tick then goes on.
+    tick.confirm_only = bool(heard) and bool(_CONFIRM_RE.fullmatch(heard[-1][1]))
 
 
 def _mention_thread(tick: Tick) -> List[dict]:
@@ -488,10 +506,12 @@ def _render_drafts(items: List[dict]) -> str:
 
 
 def _confirm_follow_ups(tick: Tick) -> Optional[Result]:
-    """Open the pending drafts when their requester confirms; None for any other tick.
+    """Answer the `confirm` comments; a Result when the tick ends there, else None.
 
-    A confirmation only confirms: the caller ends the tick there, so the same
-    comment cannot also resume a gate or approve a data change.
+    A confirmation only confirms: when it is the last word of those allowed to
+    command the bot, the caller ends the tick, so it cannot also resume a gate
+    or approve a data change. When one of them poked for real afterwards, the
+    draft is opened and the tick goes on for that poke.
     """
     if not tick.confirms:
         return None
@@ -502,16 +522,26 @@ def _confirm_follow_ups(tick: Tick) -> Optional[Result]:
         login for login, at in tick.confirms
         if proposal and at > proposal.get("at", 0)
         and gh.same_login(login, proposal.get("by", ""))
-        and gh.is_authorized(tick.owner, tick.repo, login, tick.project_name)
     ), "")
+    # Saved in every case: these comments are answered, and must not be read
+    # again by the next tick (a poke from chat would be inert too).
+    answered = max(at for _login, at in tick.confirms)
     if not who:
+        tick.save(request_at=max(answered, tick.record.get("request_at", 0)))
+        if not tick.confirm_only:
+            return None
         # Still not a poke: "confirm" on a draft already opened, replaced or
         # somebody else's must not go on to answer a gate.
         _reply(tick, "nothing_to_confirm")
         tick.note = "Nothing to confirm"
         return True, f"No draft to confirm on {tick.issue_url}"
+    result = _open_proposal(tick, proposal, who, answered)
+    return result if tick.confirm_only else None
+
+
+def _open_proposal(tick: Tick, proposal: dict, who: str, answered: float) -> Result:
     # Cleared first: whatever fails below, a proposal is opened once.
-    tick.save(proposal=None, request_at=max(at for _login, at in tick.confirms))
+    tick.save(proposal=None, request_at=answered)
     urls, error = [], ""
     try:
         # One by one into the list: what exists when a creation fails is kept.
