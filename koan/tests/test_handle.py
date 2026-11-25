@@ -22,6 +22,7 @@ BOT = "koan-bot"
 ISSUE = "https://github.com/owner/repo/issues/7"
 PR = "https://github.com/owner/repo/pull/12"
 HEAD = "abc123"
+PROJECT_OF = {"repo": "proj", "app": "appproj"}  # repository → configured project
 EMPTY_MISSIONS = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
 AUDIT = (
     "**Assumptions audit (auto):** the following plan assumptions were flagged — "
@@ -69,6 +70,9 @@ class FakeGitHub:
         self.files = []
         self.changed_files = None
         self.head_after_listing = None
+        self.redirects = {}  # old issue URL → where GitHub now serves it
+        self.pr_calls = []  # (owner, repo, number) of every PR read
+        self.repo_calls = set()  # (owner, repo) of every other PR read or write
 
     def install(self, enter):
         gh = handle_runner.gh
@@ -78,10 +82,17 @@ class FakeGitHub:
                      "merge_commit_sha", "is_team_member", "move_on_board", "is_authorized",
                      "pr_files", "pr_changed_files"):
             enter(patch.object(gh, name, getattr(self, name)))
-        enter(patch.object(handle_ci, "ci_at_head", lambda branch, repo, head: self.ci_state))
+        enter(patch.object(handle_ci, "ci_at_head", self.ci_at_head))
+
+    def ci_at_head(self, branch, full_repo, head):
+        self.repo_calls.add(tuple(full_repo.split("/")))
+        return self.ci_state
 
     def fetch_issue(self, owner, repo, number):
-        return dict(self.issue)
+        url = f"https://github.com/{owner}/{repo}/issues/{number}"
+        # With transfers in play, an issue GitHub does not redirect is itself.
+        here = url if self.redirects else self.issue["html_url"]
+        return {**self.issue, "html_url": self.redirects.get(url, here)}
 
     def fetch_comments(self, owner, repo, number):
         if self.fail_comments_with:
@@ -102,23 +113,29 @@ class FakeGitHub:
         return self.open_pr
 
     def pr_info(self, owner, repo, number):
+        self.pr_calls.append((owner, repo, number))
         return {"state": self.pr_state, "headRefOid": HEAD, "isDraft": True, "url": PR,
                 "headRefName": "feature/x", "isCrossRepository": self.cross_repository}
 
     def pr_files(self, owner, repo, number):
+        self.repo_calls.add((owner, repo))
         return [dict(f) for f in self.files]
 
     def pr_changed_files(self, owner, repo, number):
+        self.repo_calls.add((owner, repo))
         total = self.changed_files if self.changed_files is not None else len(self.files)
         return total, self.head_after_listing or HEAD
 
     def merge_commit_sha(self, owner, repo, number):
+        self.repo_calls.add((owner, repo))
         return "merge456"
 
     def hand_off_pr(self, owner, repo, number, reviewer, is_draft):
+        self.repo_calls.add((owner, repo))
         self.handed_off.append((number, reviewer))
 
     def preview_status(self, owner, repo, environment, shas):
+        self.repo_calls.add((owner, repo))
         return self.preview
 
     def is_team_member(self, org, team, login):
@@ -157,8 +174,14 @@ def pipeline(tmp_path, monkeypatch):
     with ExitStack() as stack:
         fake.install(stack.enter_context)
         stack.enter_context(patch.object(handle_runner, "_bot_login", return_value=BOT))
+        stack.enter_context(patch.object(
+            handle_runner, "_resolve_project",
+            lambda owner, repo: (PROJECT_OF.get(repo, ""), str(tmp_path))))
         # Takes the project: QA settings are per project.
-        stack.enter_context(patch("app.config.get_handle_config", side_effect=lambda project: config))
+        project_cfg = {}  # settings of the projects that differ from the default
+        stack.enter_context(patch(
+            "app.config.get_handle_config",
+            side_effect=lambda project: project_cfg.get(project, config)))
         stack.enter_context(patch("app.config.get_branch_prefix", return_value="koan/"))
         stack.enter_context(patch("app.config.is_ci_check_enabled", side_effect=lambda: ci_check["enabled"]))
         stack.enter_context(patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 2}))
@@ -167,12 +190,13 @@ def pipeline(tmp_path, monkeypatch):
         class Pipeline:
             github = fake
             cfg = config
+            project_config = project_cfg
             instance_dir = str(instance)
 
-            def run(self, url=ISSUE, after=""):
+            def run(self, url=ISSUE, after="", project="proj"):
                 context = f"after:{after}" if after else ""
                 self.outcome = handle_runner.run_handle(
-                    url, str(tmp_path), "proj", str(instance), context)
+                    url, str(tmp_path), project, str(instance), context)
                 return self.outcome.ok, self.outcome.summary
 
             def set_triage(self, output):
@@ -1106,6 +1130,183 @@ class TestGateResume:
         pipeline.run()
         assert pipeline.record()["phase"] == "planning"
         assert f"/plan {ISSUE}" in pipeline.pending()[0]
+
+
+OLD_ISSUE = "https://github.com/owner/app/issues/33"
+
+
+class TestTransferredIssue:
+    """A transfer changes the issue's URL; the pipeline follows it."""
+
+    def _gate_then_transfer(self, pipeline):
+        """Gate on triage as OLD_ISSUE, then move the thread to ISSUE."""
+        github = pipeline.github
+        github.issue["html_url"] = OLD_ISSUE
+        pipeline.set_triage(_triage_output("needs_human", ["Which currency?"]))
+        pipeline.run(url=OLD_ISSUE)
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE)["resume"] == "triage"
+        github.comments.append(
+            {"author": BOT, "body": github.posted[-1], "created_at": time.time()})
+        github.issue["html_url"] = ISSUE
+        github.redirects[OLD_ISSUE] = ISSUE
+
+    def test_every_comment_names_its_record(self, pipeline):
+        pipeline.run()
+        assert pipeline.github.posted[0].endswith(f"<!-- koan-handle: {ISSUE} -->")
+
+    def test_poke_after_a_transfer_finds_the_gate_it_left(self, pipeline):
+        self._gate_then_transfer(pipeline)
+        pipeline.set_triage(RuntimeError("triage must not run again unanswered"))
+        pipeline.run()
+        record = pipeline.record()
+        assert (record["phase"], record["resume"]) == ("waiting_human", "triage")
+        assert "still waiting for a reply" in pipeline.github.posted[-1]
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE) == {}
+
+    def test_answer_after_a_transfer_resumes_under_the_new_url(self, pipeline):
+        self._gate_then_transfer(pipeline)
+        pipeline.set_triage(_triage_output("go"))
+        pipeline.github.comments.append(
+            {"author": "dev", "body": f"Euros. @{BOT} handle", "created_at": time.time() + 5})
+        pipeline.run()
+        record = pipeline.record()
+        assert (record["phase"], record["project"]) == ("planning", "proj")
+        assert f"/plan {ISSUE}" in pipeline.pending()[0]
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE) == {}
+
+    def test_poke_written_before_the_tick_runs_still_names_the_requester(self, pipeline):
+        self._gate_then_transfer(pipeline)
+        pipeline.set_triage(_triage_output("go"))
+        pipeline.github.comments.append(
+            {"author": "lead", "body": f"Euros. @{BOT} handle", "created_at": time.time()})
+        time.sleep(0.01)
+        pipeline.run()
+        assert pipeline.record()["requester"] == "lead"
+
+    def _transferred(self, pipeline, **record):
+        """A record left under OLD_ISSUE, whose thread GitHub now serves as ISSUE."""
+        handle_state.update_record(
+            pipeline.instance_dir, OLD_ISSUE, project="appproj", requester="dev", **record)
+        pipeline.github.comments.append({
+            "author": BOT, "created_at": 0.5,
+            "body": f"Taking it.\n\n<!-- koan-handle: {OLD_ISSUE} -->"})
+        pipeline.github.redirects[OLD_ISSUE] = ISSUE
+
+    def test_pull_request_stays_in_the_repository_it_was_opened_in(self, pipeline):
+        self._transferred(
+            pipeline, phase="ci", pr_url="https://github.com/owner/app/pull/40", pr_number="40",
+            branch="koan/implement-33", ci_polls=0, ci_empty_checks=0)
+        pipeline.project_config["appproj"] = {**pipeline.cfg, "qa": {
+            "command": "/qa", "preview_environment": "pr-{pr}", "max_wait_ticks": 2,
+            "wait_minutes": 5}}
+        pipeline.github.preview = ("ready", "https://preview.example")
+        pipeline.run(after="ci")
+        assert pipeline.record()["phase"] == "reviewing"
+        # The review runs where the branch is; the tick stays with the issue.
+        review, tick = pipeline.pending()[:2]
+        assert review.startswith("- [project:appproj] /review https://github.com/owner/app/pull/40")
+        assert tick.startswith(f"- [project:proj] /handle {ISSUE} after:review")
+        _write_sidecar(pipeline.instance_dir, True, time.time() + 1, name="owner_app_40.json")
+        pipeline.run(after="review")
+        # QA is the PR's repository's: the issue's project has none configured.
+        assert pipeline.record()["phase"] == "qa_running"
+        assert any(line.startswith("- [project:appproj] /qa https://preview.example")
+                   for line in pipeline.pending())
+        assert set(pipeline.github.pr_calls) == {("owner", "app", "40")}
+        assert pipeline.github.repo_calls == {("owner", "app")}
+
+    def test_data_guard_is_the_one_of_the_prs_repository(self, pipeline):
+        self._transferred(
+            pipeline, phase="fixing", pr_url="https://github.com/owner/app/pull/40",
+            pr_number="40", branch="koan/implement-33")
+        pipeline.github.files = [_file("migrations/Version1.php", status="added")]
+        pipeline.project_config["appproj"] = {**pipeline.cfg, "data_guard": {
+            "migrations": [], "scripts": [], "translations": []}}
+        pipeline.run(after="fix")
+        assert pipeline.record()["phase"] == "reviewing"
+
+    def test_pr_in_a_repository_without_a_project_stops_the_tick(self, pipeline):
+        self._transferred(
+            pipeline, phase="reviewing", pr_url="https://github.com/owner/gone/pull/40",
+            pr_number="40", branch="koan/implement-33", phase_started_at=1.0)
+        ok, _ = pipeline.run(after="review")
+        record = pipeline.record()
+        assert not ok and (record["phase"], record["resume"]) == ("waiting_human", "retry")
+        assert pipeline.pending() == [] and pipeline.github.pr_calls == []
+        assert "no project is configured for owner/gone" in pipeline.github.posted[-1]
+
+    def test_ci_fixes_are_registered_under_the_prs_project(self, pipeline):
+        self._transferred(
+            pipeline, phase="ci", pr_url="https://github.com/owner/app/pull/40", pr_number="40",
+            branch="koan/implement-33", ci_polls=0, ci_empty_checks=0)
+        pipeline.github.ci_state = "pending"
+        pipeline.run(after="ci")
+        ci_section = pipeline.missions().split("## CI")[1].split("## ")[0]
+        assert "[project:appproj] https://github.com/owner/app/pull/40" in ci_section
+        assert "repo:owner/app" in ci_section
+
+    def test_stale_tick_after_the_rename_still_moves_to_the_new_project(self, pipeline):
+        """A poke renamed the record first; the tick queued before the transfer runs next."""
+        self._transferred(pipeline, phase="planning", phase_started_at=100.0)
+        handle_state.rename_record(pipeline.instance_dir, OLD_ISSUE, ISSUE, project="proj")
+        pipeline.github.comments.append(_plan_comment("None — ready to implement.", 200.0))
+        pipeline.run(url=OLD_ISSUE, after="plan", project="appproj")
+        assert pipeline.pending()[0].startswith(f"- [project:proj] /implement {ISSUE}")
+        assert pipeline.pending()[1].startswith(f"- [project:proj] /handle {ISSUE} after:implement")
+
+    def test_record_with_a_malformed_history_does_not_break_the_lookup(self, pipeline):
+        handle_state.update_record(
+            pipeline.instance_dir, "https://github.com/x/z/issues/2", moved_from=["not a pair"])
+        self._transferred(pipeline, phase="planning")
+        pipeline.run(after="plan")
+        assert pipeline.record()["moved_from"] == [[OLD_ISSUE, "appproj"]]
+
+    def test_tick_queued_before_the_transfer_moves_to_the_new_project(self, pipeline):
+        self._transferred(pipeline, phase="planning", phase_started_at=100.0)
+        pipeline.github.comments.append(_plan_comment("None — ready to implement.", 200.0))
+        pipeline.run(url=OLD_ISSUE, after="plan", project="appproj")
+        assert pipeline.record()["project"] == "proj"
+        assert pipeline.pending()[0].startswith(f"- [project:proj] /implement {ISSUE}")
+
+    def test_second_transfer_before_the_next_comment_is_followed(self, pipeline):
+        middle = "https://github.com/owner/mid/issues/9"
+        self._transferred(pipeline, phase="planning")
+        pipeline.github.redirects[OLD_ISSUE] = middle
+        handle_state.rename_record(pipeline.instance_dir, OLD_ISSUE, middle)
+        pipeline.github.redirects = {OLD_ISSUE: ISSUE, middle: ISSUE}
+        pipeline.run(after="plan")
+        assert handle_state.load_record(pipeline.instance_dir, middle) == {}
+        assert pipeline.record()["moved_from"] == [[OLD_ISSUE, "appproj"], [middle, "appproj"]]
+
+    def test_poke_while_a_step_queued_before_the_transfer_runs_is_busy(self, pipeline):
+        self._transferred(pipeline, phase="planning", phase_started_at=100.0)
+        (Path(pipeline.instance_dir) / "missions.md").write_text(EMPTY_MISSIONS.replace(
+            "## Pending\n", f"## Pending\n\n- [project:appproj] /handle {OLD_ISSUE} after:plan\n"))
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+        assert "Already on it" in pipeline.github.posted[-1]
+
+    def test_quoted_marker_cannot_take_over_another_record(self, pipeline):
+        """The marker names a record GitHub does not redirect to this issue."""
+        handle_state.update_record(pipeline.instance_dir, OLD_ISSUE, phase="done", requester="lead")
+        pipeline.github.redirects[OLD_ISSUE] = OLD_ISSUE  # still its own issue
+        pipeline.github.comments.append({
+            "author": BOT, "created_at": 0.5,
+            "body": f"Summary.\n\n<!-- koan-handle: {OLD_ISSUE} -->",
+        })
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE)["phase"] == "done"
+
+    def test_marker_in_a_humans_comment_is_ignored(self, pipeline):
+        handle_state.update_record(pipeline.instance_dir, OLD_ISSUE, phase="done")
+        pipeline.github.redirects[OLD_ISSUE] = ISSUE
+        pipeline.github.comments.insert(0, {
+            "author": "reporter", "created_at": 0.5,
+            "body": f"Mine.\n\n<!-- koan-handle: {OLD_ISSUE} -->",
+        })
+        pipeline.run()
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE)["phase"] == "done"
 
 
 class TestProjectQaConfig:

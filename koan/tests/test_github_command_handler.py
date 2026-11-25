@@ -3759,6 +3759,69 @@ class TestTryAssignmentNotification:
 
         assert "/implement https://github.com/sukria/koan/issues/55" in content
 
+    def _assign_with_timeline(
+        self, notification, registry, tmp_path, monkeypatch, timeline,
+    ):
+        """Run the assign fallback for a bot whose `assigned` events are *timeline*."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True, exist_ok=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        def _api(endpoint, **kwargs):
+            if endpoint.endswith("/timeline?per_page=100"):
+                if isinstance(timeline, Exception):
+                    raise timeline
+                return timeline
+            return ""
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github.api", side_effect=_api):
+            _try_assignment_notification(
+                notification, registry, {"github": {"nickname": "koan-bot"}})
+        return missions_path.read_text()
+
+    def test_assign_made_by_the_bot_itself_does_not_queue_implement(
+        self, assign_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """A transferred issue has no /handle record under its new URL, but its
+        timeline still says the bot assigned itself: that is not a request."""
+        content = self._assign_with_timeline(
+            assign_notification, review_registry, tmp_path, monkeypatch,
+            "koan-bot\tlead\nKoan-Bot\tkoan-bot\n",
+        )
+
+        assert "/implement" not in content
+        assert assign_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+
+    def test_assign_on_a_pull_request_reads_no_timeline(self):
+        """A pull request's own URL has no timeline endpoint, and /handle never
+        assigns the bot to one."""
+        from app.github_command_handler import _bot_assigned_itself
+
+        notification = {"subject": {
+            "type": "PullRequest", "url": "https://api.github.com/repos/sukria/koan/pulls/9"}}
+        with patch("app.github.api", side_effect=AssertionError("no call expected")):
+            assert not _bot_assigned_itself(notification, {"github": {"nickname": "koan-bot"}})
+
+    @pytest.mark.parametrize("timeline", [
+        "koan-bot\tkoan-bot\nkoan-bot\tlead\n",  # a human re-assigned the bot afterwards
+        "someone\tkoan-bot\nkoan-bot\tlead\n",   # the bot assigned somebody else
+        "",
+        RuntimeError("timeline unavailable"),
+    ])
+    def test_assign_made_by_a_human_still_queues_implement(
+        self, assign_notification, review_registry, tmp_path, monkeypatch, timeline,
+    ):
+        content = self._assign_with_timeline(
+            assign_notification, review_registry, tmp_path, monkeypatch, timeline,
+        )
+
+        assert "/implement https://github.com/sukria/koan/issues/55" in content
+
     def test_irrelevant_reason_returns_false(self, review_registry):
         """Notifications with non-assignment reasons are ignored."""
         notif = {"reason": "mention", "id": "1"}

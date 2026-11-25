@@ -4,7 +4,7 @@ title: "Skill Spec — handle"
 description: "Specifies the `/handle` skill, a resumable state machine that carries a GitHub issue from triage to a review-ready PR by chaining existing skills as separate missions and stopping at human gates."
 tags: [skill]
 created: 2026-11-09
-updated: 2026-11-23
+updated: 2026-11-24
 ---
 
 # Skill Spec — `handle`
@@ -86,6 +86,42 @@ the PR's comment thread.
   is addressed as `/pull/<n>` or `/issues/<n>`: the issue's pipeline owns it. That holds
   when a PR pipeline also has a record for the same PR (the PR was handled on its own
   before its issue was): the issue's record wins for pokes and CI relays.
+
+### Transferred issue
+
+GitHub gives a transferred issue a new URL, and the record is keyed by the URL. The
+pipeline follows the issue rather than start over (a fresh triage would discard the gate
+the issue was parked at):
+
+- Every comment the pipeline posts ends with a hidden marker naming its record key
+  (`<!-- koan-handle: <key> -->`). Comments move with the issue.
+- A tick that finds no record for its issue reads the marker of the bot's latest marked
+  comment. When it names another key that has a record, and GitHub resolves that old URL
+  to this issue, the record is renamed to the new URL (one locked write) and the tick
+  goes on from the stored phase.
+- **The project follows the issue.** The record, and the tick that renames it, switch to
+  the project configured for the issue's new repository; with no project for that
+  repository, the tick's. Every later tick on a moved record does the same switch, so
+  one queued before the transfer never plans or implements in the old checkout.
+- **The pull request does not move.** A PR stays in the repository it was opened in:
+  every read and write of the pipeline's PR uses the repository of the stored `pr_url`,
+  never the issue's new one. The steps that work on the PR (`/review`, `/rebase --fix`,
+  the `## CI` entry, the QA command) are queued under the project of the PR's
+  repository, whose checkout holds its branch, and `ready_before_ci`, `data_guard` and
+  `qa` are read from that project. When no project is configured for that repository,
+  the tick fails before doing anything (error gate, `retry`): the issue's checkout is
+  never used in its place. The ticks, `/plan` and `/implement` stay with the
+  issue's project.
+- **Former URLs are kept** in the record (`moved_from`, with the project of the time): a
+  marker naming one of them still finds the record after a second transfer, and a
+  follow-up tick or re-check queued under one of them still counts as pending.
+- Only a marker that closes a comment the bot itself wrote counts, and the redirect is
+  checked with GitHub: text an issue participant got the bot to quote cannot move a record.
+- *Known limits:* comments posted before the marker existed carry none, so an issue
+  transferred with only such comments starts over. A step queued before the transfer
+  still names the old URL and the old issue number (the `<prefix>implement-<N>` branch):
+  it gates as "no PR" and a poke re-runs it; autoreview may run on what it produced,
+  since that mission no longer names the record's key.
 
 ### Data-change check (entering `ci`)
 
@@ -314,6 +350,12 @@ resumes once someone has replied in either thread.
   reason: without the guard, the first comment on a gated issue starts `/implement` behind
   the gate. Only `@<bot> handle` moves such an issue. Best-effort like the autoreview guard:
   an unreadable state file is logged and the fallback proceeds.
+  The fallback also never queues `/implement` when the bot's latest `assigned` event on
+  the issue was made by the bot itself: a self-assignment is not a request. This does not
+  depend on the record, so it holds for an issue whose URL changed (a transfer re-sends
+  the assignment under the new thread). An unreadable timeline is logged and the fallback
+  proceeds. Only issues are checked (the pipeline assigns the bot to nothing else); the
+  read is one paginated call per `assign` notification that reaches it.
 - **CI queue:** `ci_queue_runner.drain_one()` calls `handle_state.relay_ci_outcome()`, and
   sends its chat line about a PR only when no pipeline drives it (`handle_state.drives_pr`).
 - **Agent loop:** `run._notify_mission_end()` reads the tick's milestone

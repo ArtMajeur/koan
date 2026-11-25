@@ -6,7 +6,25 @@ instance's ``/language`` preference; unknown languages fall back to English.
 ``{mention}`` is ``"@login: "`` or empty when no authorized requester is known.
 """
 
+import re
+
 from app.language_preference import get_language
+
+# Closes every pipeline comment with its record key. Comments move with a
+# transferred issue, so the marker is how a tick finds the record the issue
+# had under its old URL. Anchored to the end: text quoted inside a comment
+# (a triage summary) is never read as a marker.
+_MARKER_RE = re.compile(r"\n<!-- koan-handle: (\S+) -->\s*\Z")
+
+
+def with_marker(body: str, record_key: str) -> str:
+    return f"{body}\n\n<!-- koan-handle: {record_key} -->"
+
+
+def marked_key(body: str) -> str:
+    """The record key a pipeline comment closes with ("" when it has none)."""
+    match = _MARKER_RE.search(body or "")
+    return match.group(1) if match else ""
 
 _TEMPLATES = {
     "english": {

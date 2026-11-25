@@ -119,6 +119,54 @@ def reset_record(instance_dir: str, issue_url: str, **keep) -> None:
     _modify(instance_dir, _change)
 
 
+def rename_record(instance_dir: str, old_url: str, new_url: str, **changes) -> dict:
+    """Move *old_url*'s record to *new_url* (a transferred issue) and return it.
+
+    Returns an empty dict, and writes nothing, when *old_url* has no record or
+    *new_url* already has one. ``updated_at`` is kept: it dates the last tick,
+    and the poke that follows the transfer must still read as newer than it.
+    """
+    record = {}
+
+    def _change(data: dict) -> bool:
+        if not data.get(old_url) or data.get(new_url):
+            return False
+        moved = data.pop(old_url)
+        record.update(moved, **changes)
+        # A tick queued before the move, and the bot's earlier comments, still
+        # name the former URL (and project).
+        record["moved_from"] = [
+            *(moved.get("moved_from") or []), [old_url, moved.get("project", "")]]
+        data[new_url] = record
+        return True
+
+    _modify(instance_dir, _change)
+    return record
+
+
+def find_moved(instance_dir: str, url: str) -> str:
+    """The key of the record known by *url*, now or before a move ("" if none)."""
+    if not _state_path(instance_dir).exists():
+        return ""
+    for key, record in _read_all(instance_dir).items():
+        if key == url or any(former == url for former, _project in former_keys(record)):
+            return key
+    return ""
+
+
+def former_keys(record: dict) -> list:
+    """The ``(url, project)`` pairs a record was known by before each move.
+
+    Entries of another shape (a hand-edited file) are skipped: one bad record
+    must not fail the lookup for every issue.
+    """
+    moved = record.get("moved_from") if isinstance(record, dict) else None
+    return [
+        (entry[0], entry[1]) for entry in (moved if isinstance(moved, list) else [])
+        if isinstance(entry, (list, tuple)) and len(entry) == 2
+    ]
+
+
 def find_issue_for_pr(instance_dir: str, pr_url: str) -> Optional[str]:
     """Return the key of the record tracking *pr_url*, if any.
 
@@ -214,8 +262,12 @@ def handle_entry(project_name: str, issue_url: str, after: str = "") -> str:
 
 def queue_step(
     instance_dir: str, project_name: str, issue_url: str, command: str, after: str,
+    step_project: Optional[str] = None,
 ) -> bool:
     """Queue *command* followed by the ``/handle`` tick that waits for it.
+
+    The tick runs under *project_name*; the step too, unless *step_project*
+    names the project whose checkout it needs.
 
     Both lines go in one locked write so the run loop never sees one without
     the other. The follow-up's ``after:`` tag makes its dedup signature differ
@@ -228,7 +280,8 @@ def queue_step(
 
     step_queued, _ = insert_pending_missions(
         Path(instance_dir) / "missions.md",
-        [mission_line(project_name, command), handle_entry(project_name, issue_url, after)],
+        [mission_line(project_name if step_project is None else step_project, command),
+         handle_entry(project_name, issue_url, after)],
     )
     return step_queued
 
