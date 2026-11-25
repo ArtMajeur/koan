@@ -4,7 +4,7 @@ title: "Skill Spec — handle"
 description: "Specifies the `/handle` skill, a resumable state machine that carries a GitHub issue from triage to a review-ready PR by chaining existing skills as separate missions and stopping at human gates."
 tags: [skill]
 created: 2026-11-09
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # Skill Spec — `handle`
@@ -35,7 +35,7 @@ pokes change the requester, re-enter a finished pipeline, or get a "busy" reply.
 
 A chained tick runs only if its step is the one the current phase waits for
 (`planning`←`plan`, `implementing`←`implement`, `ci`←`ci`/`ci-poll`, `reviewing`←`review`,
-`fixing`←`fix`, `qa`←`qa-wait`, `qa_running`←`qa`); any other chained tick — e.g. a
+`fixing`←`fix`, `qa`←`qa-wait`, `qa_running`←`qa`, `delegated`←`prs`); any other chained tick — e.g. a
 re-check that fires after the pipeline gated — is ignored. A poke answers "busy" only
 while a re-check event for the current phase is actually scheduled; otherwise (a retry
 after an error, a lost event file) it re-evaluates the phase.
@@ -50,6 +50,7 @@ after an error, a lost event file) it re-evaluates the phase.
 | `fixing` | review blocking, rounds left | after `/rebase --fix` → `ci` |
 | `qa` | review lgtm, QA configured for the project | preview deployment for the PR head (or its merge commit) ready, with an `environment_url` → queue the QA command; else re-check later, at most `max_wait_ticks` times per wait |
 | `qa_running` | QA queued | hand off, saying whether a QA report (marked comment) was posted |
+| `delegated` | the issue's pull requests run as their own pipelines (below) | a roll-up tick: every PR handed off → summary, board, `done`; a poke: status, and the gated PRs are poked |
 | `done` | hand-off made | a poke: open PR → new fix round; merged → `stopped`; closed → restart from triage |
 | `waiting_human` | any gate or error | a poke resumes the blocked step (`retry` re-runs the phase that errored) |
 | `stopped` | PR closed/merged, or issue closed | a poke: merged PR → says so; issue still closed → says so; closed PR → restart from triage; open PR → new fix round |
@@ -86,6 +87,100 @@ the PR's comment thread.
   is addressed as `/pull/<n>` or `/issues/<n>`: the issue's pipeline owns it. That holds
   when a PR pipeline also has a record for the same PR (the PR was handled on its own
   before its issue was): the issue's record wins for pokes and CI relays.
+
+### Issue with pull requests of its own
+
+An issue can be closed by pull requests that already exist, that live in another
+repository than the issue (an issue tracked in a parent repository, its code in the
+repositories it groups), or by several of them. The **linked pull requests** of an issue
+are the open PRs GitHub lists as closing it (`closedByPullRequestsReferences`: a closing
+keyword in the PR body, or the issue's *Development* links), whoever authored them. A PR
+from a fork, or in a repository no project is configured for, cannot be handled: it is
+named in the status comment and otherwise ignored. So is a PR that another issue's own
+pipeline tracks (it closes both issues; that pipeline owns it), and a PR this issue does
+not track yet in a repository where the requester may not command the bot. Rights decide
+what a poke may **start**, never which PRs the issue **waits for**: a PR already in the
+issue's list stays in it, with its real state, whoever pokes. When none of the linked
+PRs can be the issue's, the issue goes on as it does without any (triage). When
+GitHub cannot list the linked PRs (a linked repository the token cannot read), triage and
+the PR an `/implement` opened go on as if there were none; a poke on a `delegated` issue
+fails instead (error gate), since "none" would there mean "start over".
+
+- **When they are looked up.** Before every triage (first `/handle`, a poke at a triage
+  gate): an issue that already has linked PRs is not triaged, planned or implemented
+  again. After `/implement`, when the `<prefix>implement-<N>` branch has no fresh PR in
+  the issue's own repository: the bot's own linked PRs updated since the phase started.
+  And on every poke of a `delegated` issue.
+- **One owner per PR.** A PR can close several issues; only one pipeline drives it. Its
+  **owner** is, in this order: the issue whose record tracks it as its own PR (`pr_url`);
+  else the issue its own record names as `parent`; else the PR itself when it has a
+  pipeline of its own (a human poked it). A PR nobody owns is claimed by the first issue
+  that looks it up. An issue never takes, re-parents, pokes or waits for a PR another
+  issue owns: it names it in its reply, with the owner. An issue all of whose linked PRs
+  belong to other issues says so and stops (it is not triaged: its fix is under way
+  there), without assigning the bot or moving the board.
+- **One PR, in the issue's own repository, that has no pipeline yet:** the issue's record
+  adopts it (`pr_url`) and enters `ci`: the single-PR pipeline above, unchanged.
+- **Anything else** (a PR in another repository, several PRs, or a PR that already has a
+  pipeline of its own): the issue **delegates**. Its record lists the PRs it owns (`prs`),
+  drops any PR reference of its own (`pr_url`), and enters `delegated`. Each PR has a
+  pull-request pipeline, keyed by its URL, under the project of **its** repository, so
+  CI, the data-change check and QA follow that repository's `handle:` settings. The PR's
+  record names the issue as its `parent`; a PR claimed with no requester of its own
+  starts with the issue's.
+- **Starting a PR pipeline** is a `/handle <pr-url> after:delegate` mission: a chained
+  tick, never a human poke. It acts only on the PR's own record, and only when that
+  record names an issue as `parent`: it starts a PR that has no phase yet and resumes one
+  parked at a gate other than a data change. In any other state, or when the tick reaches
+  another record (an issue took the PR as its own in the meantime), it is ignored. A PR
+  it starts for an issue with no requester falls back to the PR's author, as a human
+  poke on the PR would; resuming an error gate re-runs the phase that failed.
+  Delegation queues it for a PR with no pipeline yet and for one parked at a gate; a PR
+  already moving is left alone, and one already handed off is only reported: a new fix
+  round is asked on the PR itself. A PR whose pipeline stopped (it was closed) and that
+  is open again starts afresh.
+- **The issue's list only grows or settles.** A PR the issue owns stays in `prs` until its
+  pipeline is done or stopped, even when GitHub stops listing it as closing the issue
+  (the closing keyword was edited out): the hand-off waits for it. A PR that left the
+  listing because it was closed or merged while its pipeline was parked (a gate gets no
+  tick of its own) is given a tick on the next poke of the issue: its pipeline stops,
+  and stops holding the issue. One that GitHub no longer serves, or whose repository
+  has no project left, cannot be given a tick: the issue marks it stopped itself.
+- **When every PR stopped and none is ready**, the roll-up tick concludes at once: "merged"
+  when one of them is (the pipeline stops), otherwise a comment that they were closed,
+  and `stopped`; a poke then starts over from triage.
+- **A PR the issue's own `/implement` pushed to** while that PR's separate pipeline had
+  already finished starts that pipeline afresh under the issue: the new head is not
+  handed off unchecked.
+- **Ownership is not released.** A PR stays with its owner while that owner's record
+  exists, also when the owning issue was closed or the closing keyword moved to another
+  issue. The other issue keeps naming the owner; reopening or poking the owner (or
+  handling the PR from there) is the way out.
+- **A data change is never approved from the issue.** A PR parked at a `data_change` gate
+  is reported, not poked, and a reply on the issue does not reopen that gate: the
+  approval is a `@<bot> handle` on the PR, by someone who looked at its files.
+- **Roll-up.** A PR pipeline with a `parent` queues `/handle <issue> after:prs` whenever
+  it stops moving (gate, hand-off, PR closed or merged). That tick reads the PRs' records:
+  once every PR is handed off or stopped, and at least one is handed off, the issue gets
+  one summary comment, moves to the review column (same rule as a hand-off) and enters
+  `done`. Until then it only logs: each PR reports on its own thread.
+- **Pokes.** On the issue: the linked PRs are looked up again (a new one is adopted), the
+  reply gives one status line per PR, and gated PRs are poked. A poke on an issue already
+  handed off, with nothing new to start, gets the status only: no second summary or
+  board move. With no open linked PR left: if one of the issue's PRs is merged, the
+  reply says so and the pipeline stops (a PR merged into a branch that does not close
+  the issue must not be implemented again; later pokes repeat it, and closing the issue
+  is how to end it); otherwise, or when its PRs can no longer be read, the issue starts
+  over from triage.
+  On a PR: that PR's pipeline, as for any PR.
+- **Gates.** A delegated PR's gate, other than a data change, also reopens on a human
+  reply written on the parent issue after the gate.
+- **Closing the issue** stops the issue's own roll-up, not its PRs' pipelines: merging one
+  PR can close the issue while another is still moving. Close a PR to stop its pipeline.
+- **Not unified:** an issue that adopted a single PR of its own repository keeps the
+  single-PR record while that pipeline runs; a second linked PR appearing later is not
+  picked up by that record.
+- A transferred issue (below) keeps its PRs: their `parent` follows the issue's new URL.
 
 ### Transferred issue
 
@@ -396,7 +491,11 @@ resumes once someone has replied in either thread.
 - Triage reads the project checkout as it stands; it does not switch to the default
   branch first, so a checkout left on another branch skews the assessment.
 - `/implement` is assumed to open its PR on `<prefix>implement-<N>` in the issue's own
-  repository; an issue tracked in another repo than the code gates as "no PR".
+  repository, or to link it as closing the issue (a closing keyword naming the issue in
+  the PR body). A PR opened elsewhere without that link gates as "no PR".
+- Linked PRs include a human's: after a poke on the issue, `/rebase --fix` pushes fix
+  commits to that person's branch, as it does when the PR itself is poked.
+- At most 20 linked PRs are read per issue.
 - A preview deployment is matched on the PR head or its merge commit; a deployment keyed
   on another SHA never reads as ready and the hand-off says the preview was not ready.
 - Kōan must run as a **user account**: mention commands (`parse_mention_command`,

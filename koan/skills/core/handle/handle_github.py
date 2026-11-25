@@ -29,6 +29,14 @@ _SET_STATUS = (
 )
 
 
+_LINKED_PRS_QUERY = (
+    "query($owner:String!,$repo:String!,$num:Int!){repository(owner:$owner,name:$repo){"
+    "issue(number:$num){closedByPullRequestsReferences(first:20,includeClosedPrs:false){"
+    "nodes{url number state isCrossRepository headRefName updatedAt author{login}"
+    " repository{name owner{login}}}}}}}"
+)
+
+
 def _log(msg: str) -> None:
     print(f"[handle] {msg}", file=sys.stderr)
 
@@ -172,6 +180,40 @@ def assign_self(owner: str, repo: str, number: str) -> bool:
 
 
 # -- pull request ---------------------------------------------------------
+
+
+def _required(node: dict, key: str):
+    """A field a record is later keyed or driven by: a null one is an unreadable answer."""
+    if not node.get(key):
+        raise ValueError(f"linked pull request without {key}")
+    return node[key]
+
+
+def linked_prs(owner: str, repo: str, number: str) -> List[dict]:
+    """The open PRs GitHub lists as closing the issue, in any repository.
+
+    Each is ``{url, owner, repo, number, author, is_fork, branch, updated_at}``.
+    """
+    data = _json(run_gh(
+        "api", "graphql", "-f", f"query={_LINKED_PRS_QUERY}", "-f", f"owner={owner}",
+        "-f", f"repo={repo}", "-F", f"num={int(number)}",
+    )) or {}
+    try:
+        nodes = data["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["nodes"]
+        return [
+            {
+                "url": _required(pr, "url"), "owner": pr["repository"]["owner"]["login"],
+                "repo": pr["repository"]["name"], "number": str(_required(pr, "number")),
+                "author": (pr.get("author") or {}).get("login") or "",
+                "is_fork": bool(pr.get("isCrossRepository")),
+                "branch": _required(pr, "headRefName"),
+                "updated_at": _epoch(pr["updatedAt"]),
+            }
+            for pr in nodes or [] if pr and pr.get("state") == "OPEN"
+        ]
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        # A PR in a repository the token cannot read comes back with null fields.
+        raise RuntimeError(f"unreadable linked pull requests of {owner}/{repo}#{number}") from e
 
 
 def find_open_pr(owner: str, repo: str, branch: str, bot: str) -> Optional[dict]:

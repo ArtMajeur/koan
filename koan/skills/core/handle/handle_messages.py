@@ -107,6 +107,39 @@ _TEMPLATES = {
             "{mention}This pull request comes from a fork: I can't push fixes to its "
             "branch, so I won't handle it."
         ),
+        "pr_adopted": (
+            "{mention}{pr_url} already closes this issue: I take it through CI and review "
+            "instead of starting over."
+        ),
+        "prs_status": (
+            "{mention}This issue is closed by pull requests I handle one by one, each on "
+            "its own thread:\n\n{prs}\n\nComment `@{bot} handle` on a pull request to move "
+            "it. Here, it gives this status and wakes the ones waiting for an answer; a "
+            "data change is only approved on its own pull request."
+        ),
+        "prs_done": "{mention}Every pull request for this issue is ready for review:\n\n{prs}",
+        "prs_owned": (
+            "{mention}The pull requests that close this issue are already handled from "
+            "another issue, so I don't take this one:\n\n{prs}"
+        ),
+        "pr_state_new": "starting (CI, then review)",
+        "pr_state_running": "in progress (step: {phase})",
+        "pr_state_gate": "waiting for a human, see its thread",
+        "pr_state_data_gate": "waiting for a human to approve a data change, on its thread",
+        "pr_state_unauthorized": (
+            "not handled: you are not allowed to command me on its repository"
+        ),
+        "prs_merged": "The pull requests of this issue are merged — nothing left to do:\n\n{prs}",
+        "pr_state_owned": "handled by the pipeline of {issue_url}, which it also closes",
+        "pr_state_lost": "can no longer be read: I stop waiting for it",
+        "prs_closed": (
+            "{mention}The pull requests of this issue were closed without being merged, "
+            "so I stop here:\n\n{prs}\n\nComment `@{bot} handle` to start over from the issue."
+        ),
+        "pr_state_done": "ready for review",
+        "pr_state_stopped": "closed or merged",
+        "pr_state_fork": "not handled: it comes from a fork",
+        "pr_state_no_project": "not handled: no project is configured for its repository",
         "state_closed": "closed",
         "state_merged": "merged",
     },
@@ -196,6 +229,48 @@ _TEMPLATES = {
             "{mention}Cette pull request vient d'un fork : je ne peux pas pousser de "
             "correctifs sur sa branche, donc je ne la traite pas."
         ),
+        "pr_adopted": (
+            "{mention}{pr_url} ferme déjà cette issue : je l'emmène en CI et en revue "
+            "au lieu de repartir de zéro."
+        ),
+        "prs_status": (
+            "{mention}Cette issue est fermée par des pull requests que je traite une par "
+            "une, chacune dans son fil :\n\n{prs}\n\nCommentez `@{bot} handle` sur une pull "
+            "request pour la faire avancer. Ici, il donne cet état et relance celles qui "
+            "attendent une réponse ; une modification de données ne s'approuve que sur sa "
+            "propre pull request."
+        ),
+        "prs_done": (
+            "{mention}Toutes les pull requests de cette issue sont prêtes pour la revue :"
+            "\n\n{prs}"
+        ),
+        "prs_owned": (
+            "{mention}Les pull requests qui ferment cette issue sont déjà traitées depuis "
+            "une autre issue, donc je ne prends pas celle-ci :\n\n{prs}"
+        ),
+        "pr_state_new": "démarrage (CI, puis revue)",
+        "pr_state_running": "en cours (étape : {phase})",
+        "pr_state_gate": "en attente d'un humain, voir son fil",
+        "pr_state_data_gate": (
+            "en attente d'un humain pour approuver une modification de données, dans son fil"
+        ),
+        "pr_state_unauthorized": (
+            "non traitée : vous n'êtes pas autorisé à me commander sur son dépôt"
+        ),
+        "prs_merged": (
+            "Les pull requests de cette issue sont fusionnées — plus rien à faire :\n\n{prs}"
+        ),
+        "pr_state_owned": "traitée par le pipeline de {issue_url}, qu'elle ferme aussi",
+        "pr_state_lost": "n'est plus lisible : j'arrête de l'attendre",
+        "prs_closed": (
+            "{mention}Les pull requests de cette issue ont été fermées sans être fusionnées, "
+            "donc je m'arrête ici :\n\n{prs}\n\nCommentez `@{bot} handle` pour repartir de "
+            "l'issue."
+        ),
+        "pr_state_done": "prête pour la revue",
+        "pr_state_stopped": "fermée ou fusionnée",
+        "pr_state_fork": "non traitée : elle vient d'un fork",
+        "pr_state_no_project": "non traitée : aucun projet n'est configuré pour son dépôt",
         "state_closed": "fermée",
         "state_merged": "fusionnée",
     },
