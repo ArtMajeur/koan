@@ -48,7 +48,10 @@ _CREATE_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 # `@<bot> handle confirm` opens a pending draft (see _confirm_follow_ups).
-_CONFIRM_RE = re.compile(r"\s*confirm(?:e|er|ed)?\b", re.IGNORECASE)
+# The whole of the comment's own words: "Confirmed by QA, go on" answers a
+# gate, it does not open a draft.
+_CONFIRM_RE = re.compile(r"\s*confirm(?:e|er|ed)?\s*[.!]?\s*", re.IGNORECASE)
+_MAX_DRAFT_CHARS = 8000  # three drafts and their comment stay well under GitHub's limit
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # What a draft could hide from the person confirming it, or slip past the
 # defusing below: HTML comments (invisible once rendered), raw tags (they can
@@ -110,6 +113,7 @@ class Tick:
     poker: str = ""  # author of the `@<bot> handle` comment that made this poke
     request: str = ""  # what that comment says besides the command
     request_at: float = 0  # when it was written
+    confirms: List[Tuple[str, float]] = field(default_factory=list)  # (author, time)
     pr_view: Optional[dict] = field(default=None, repr=False)
     pr_projects: Dict[Tuple[str, str], str] = field(default_factory=dict, repr=False)
     milestone: str = "progress"
@@ -400,8 +404,11 @@ def _resolve_requester(tick: Tick) -> str:
     # A mention older than the last tick is not this poke (e.g. a poke from
     # chat): it must not hand the pipeline back to an earlier commenter.
     since = tick.record.get("updated_at", 0)
-    tick.poker, tick.request, tick.request_at = gh.latest_handle_request(
-        _mention_thread(tick), tick.bot, since)
+    pokes = gh.handle_requests(_mention_thread(tick), tick.bot, since)
+    tick.poker, tick.request, tick.request_at = pokes[-1] if pokes else ("", "", 0)
+    # Every confirmation since the last tick, not only the latest comment's: a
+    # comment posted after it must not turn a confirmation into something else.
+    tick.confirms = [(who, at) for who, text, at in pokes if _CONFIRM_RE.fullmatch(text)]
     candidates = [tick.poker]
     if not stored:
         candidates.append(tick.issue.get("author", ""))
@@ -439,10 +446,7 @@ def _propose_follow_ups(tick: Tick) -> None:
         return
     tick.save(request_at=tick.request_at)  # before the model runs: a comment is drafted once
     try:
-        items = [
-            {"title": " ".join(_defused(item["title"]).split()), "body": _defused(item["body"])}
-            for item in parse_follow_ups(_run_request(tick, request))
-        ]
+        items = [_draft(item) for item in parse_follow_ups(_run_request(tick, request))]
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
         # No reply: the pre-check also passes on ordinary sentences, whose
         # authors asked for nothing.
@@ -457,6 +461,14 @@ def _propose_follow_ups(tick: Tick) -> None:
         # A draft nobody could read must not be confirmable.
         print(f"[handle] follow-up proposal not posted on {tick.issue_url}: {e}", file=sys.stderr)
         tick.save(proposal=None)
+
+
+def _draft(item: dict) -> dict:
+    """A model's item as it will be stored, shown and opened."""
+    body = _defused(item["body"])
+    if len(body) > _MAX_DRAFT_CHARS:
+        body = f"{body[:_MAX_DRAFT_CHARS]}\n\n[truncated]"
+    return {"title": " ".join(_defused(item["title"]).split())[:200], "body": body}
 
 
 def _render_drafts(items: List[dict]) -> str:
@@ -481,22 +493,31 @@ def _confirm_follow_ups(tick: Tick) -> Optional[Result]:
     A confirmation only confirms: the caller ends the tick there, so the same
     comment cannot also resume a gate or approve a data change.
     """
-    proposal = tick.record.get("proposal")
-    if not proposal or not _CONFIRM_RE.match(tick.request):
+    if not tick.confirms:
         return None
-    if tick.request_at <= proposal.get("at", 0):
-        return None
-    # The one who asked read the draft: nobody else answers for them.
-    if not gh.same_login(tick.poker, proposal.get("by", "")) or not gh.is_authorized(
-            tick.owner, tick.repo, tick.poker, tick.project_name):
-        return None
+    proposal = tick.record.get("proposal") or {}
+    # The one who asked read the draft: nobody else answers for them, and a
+    # confirmation written before the draft confirms nothing.
+    who = next((
+        login for login, at in tick.confirms
+        if proposal and at > proposal.get("at", 0)
+        and gh.same_login(login, proposal.get("by", ""))
+        and gh.is_authorized(tick.owner, tick.repo, login, tick.project_name)
+    ), "")
+    if not who:
+        # Still not a poke: "confirm" on a draft already opened, replaced or
+        # somebody else's must not go on to answer a gate.
+        _reply(tick, "nothing_to_confirm")
+        tick.note = "Nothing to confirm"
+        return True, f"No draft to confirm on {tick.issue_url}"
     # Cleared first: whatever fails below, a proposal is opened once.
-    tick.save(proposal=None, request_at=tick.request_at)
+    tick.save(proposal=None, request_at=max(at for _login, at in tick.confirms))
     urls, error = [], ""
     try:
         # One by one into the list: what exists when a creation fails is kept.
         urls.extend(
-            gh.create_issue(tick.owner, tick.repo, item["title"], _follow_up_body(tick, item))
+            gh.create_issue(
+                tick.owner, tick.repo, item["title"], _follow_up_body(tick, item, who))
             for item in proposal.get("items") or []
         )
     except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as e:
@@ -511,19 +532,28 @@ def _confirm_follow_ups(tick: Tick) -> Optional[Result]:
 
 
 def _report_follow_ups(tick: Tick, urls: List[str], error: str) -> None:
-    """Say what was opened and what was not. A lost reply must not lose the tick."""
+    """Say what was opened and what was not, each on its own: one lost reply
+    must not take the other with it, nor the tick."""
+    if urls and not _reply(
+            tick, "follow_ups_created", issues="\n".join(f"- {url}" for url in urls)):
+        print(f"[handle] opened but not reported on {tick.issue_url}: {', '.join(urls)}",
+              file=sys.stderr)
+    if error:
+        _reply(tick, "follow_ups_failed", error=error)
+
+
+def _reply(tick: Tick, key: str, **values) -> bool:
+    """Post a comment the tick can do without; False when it could not be posted."""
     try:
-        if urls:
-            tick.comment("follow_ups_created", issues="\n".join(f"- {url}" for url in urls))
-        if error:
-            tick.comment("follow_ups_failed", error=error)
+        tick.comment(key, **values)
+        return True
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
-        print(f"[handle] follow-up issues not reported on {tick.issue_url} ({e}); "
-              f"opened: {', '.join(urls) or 'none'}", file=sys.stderr)
+        print(f"[handle] reply {key} not posted on {tick.issue_url}: {e}", file=sys.stderr)
+        return False
 
 
-def _follow_up_body(tick: Tick, item: dict) -> str:
-    footer = render("follow_up_footer", issue_url=tick.issue_url, login=tick.poker)
+def _follow_up_body(tick: Tick, item: dict, login: str) -> str:
+    footer = render("follow_up_footer", issue_url=tick.issue_url, login=login)
     return f"{item['body']}\n\n---\n{footer}"
 
 
@@ -786,8 +816,8 @@ def _after_implement(tick: Tick) -> Result:
                 "done", "stopped"):
             # Its own pipeline had finished, and /implement just pushed to it:
             # the new head goes through CI and review like any other.
-            keep = {"requester": settled["requester"]} if settled.get("requester") else {}
-            handle_state.reset_record(tick.instance_dir, pr["url"], **keep)
+            handle_state.reset_record(
+                tick.instance_dir, pr["url"], **_kept(settled, "requester"))
         claimed = {"url": pr["url"], "owner": tick.owner, "repo": tick.repo,
                    "number": str(pr["number"]), "project": tick.project_name}
         return _delegate(tick, [claimed], []) or _gate(tick, "implement_no_pr", "implement")
@@ -983,9 +1013,8 @@ def _start_pr(tick: Tick, plan: dict) -> int:
         handle_state.update_record(tick.instance_dir, plan["url"], phase="stopped", resume=None)
         return 0
     if plan["reopened"]:
-        answered = handle_state.load_record(tick.instance_dir, plan["url"]).get("request_at")
-        handle_state.reset_record(
-            tick.instance_dir, plan["url"], **({"request_at": answered} if answered else {}))
+        handle_state.reset_record(tick.instance_dir, plan["url"], **_kept(
+            handle_state.load_record(tick.instance_dir, plan["url"])))
     seed = {"parent": tick.issue_url}
     if plan["seed_requester"]:
         seed["requester"] = tick.requester
@@ -1366,12 +1395,16 @@ def _reenter(tick: Tick) -> Result:
 def _restart(tick: Tick) -> Result:
     """Start over from triage, keeping the requester and the request already answered."""
     keep = {"requester": tick.requester} if tick.requester else {}
-    for key in ("request_at", "proposal"):  # or the same comment asks again
-        if tick.record.get(key):
-            keep[key] = tick.record[key]
+    keep.update(_kept(tick.record))
     handle_state.reset_record(tick.instance_dir, tick.issue_url, **keep)
     tick.record, tick.pr_view = dict(keep), None
     return _start(tick)
+
+
+def _kept(record: dict, *more: str) -> dict:
+    """What outlives a record that starts over: a pending draft, and the comment
+    already answered (or it would be drafted again)."""
+    return {key: record[key] for key in ("request_at", "proposal", *more) if record.get(key)}
 
 
 def _resume(tick: Tick) -> Result:

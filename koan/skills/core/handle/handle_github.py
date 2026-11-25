@@ -40,6 +40,7 @@ _LINKED_PRS_QUERY = (
 
 _BLOCKQUOTE_TAG_RE = re.compile(r"<blockquote\b.*?(?:</blockquote>|\Z)", re.IGNORECASE | re.DOTALL)
 _QUOTE_START_RE = re.compile(r"\s{0,3}>")
+_TILDE_FENCE_RE = re.compile(r"~~~.*?(?:~~~|\Z)", re.DOTALL)  # the mention parser only knows ```
 
 
 def _log(msg: str) -> None:
@@ -132,7 +133,8 @@ def own_words(body: str) -> str:
     """
     from app.github_notifications import _CODE_BLOCK_RE
 
-    prose = _BLOCKQUOTE_TAG_RE.sub("", _CODE_BLOCK_RE.sub("", body or ""))
+    code_free = _TILDE_FENCE_RE.sub("", _CODE_BLOCK_RE.sub("", body or ""))
+    prose = _BLOCKQUOTE_TAG_RE.sub("", code_free)
     kept, quoting = [], False
     for line in prose.splitlines():
         if _QUOTE_START_RE.match(line):
@@ -145,30 +147,38 @@ def own_words(body: str) -> str:
     return "\n".join(kept)
 
 
-def latest_handle_request(
+def handle_requests(
     comments: List[dict], bot: str, since: float = 0,
-) -> Tuple[str, str, float]:
-    """``(author, text, created_at)`` of the latest ``@<bot> handle`` comment newer than *since*.
+) -> List[Tuple[str, str, float]]:
+    """``(author, text, created_at)`` of every ``@<bot> handle`` comment newer than *since*, oldest first.
 
-    *text* is what the author wrote besides the command, quotes left out
-    (:func:`own_words`): a quote reply of somebody's ``@<bot> handle …`` still
-    pokes, as it always did, but carries no words of its author's.
-    ``("", "", 0)`` when there is no such comment. Parsed like every @mention command, so the
-    instruction quoted from a gate comment (`` `@<bot> handle` `` in a code
-    span) is not a request.
+    *text* is what the author wrote besides the command, code and quotes left
+    out (:func:`own_words`): a quote reply of somebody's ``@<bot> handle …``
+    still pokes, as it always did, but carries no words of its author's.
+    Parsed like every @mention command, so the instruction quoted from a gate
+    comment (`` `@<bot> handle` `` in a code span) is not a request.
     """
     from app.github_notifications import parse_mention_command
 
-    for comment in reversed(comments):
+    found = []
+    for comment in comments:
         if comment.get("created_at", 0) <= since:
-            break
+            continue
         author = comment.get("author") or ""
         command = parse_mention_command(comment.get("body") or "", bot)
         if command and command[0] == "handle" and not same_login(author, bot):
             own = parse_mention_command(own_words(comment.get("body") or ""), bot)
             text = own[1] if own and own[0] == "handle" else ""
-            return author, text, comment.get("created_at", 0)
-    return "", "", 0
+            found.append((author, text, comment.get("created_at", 0)))
+    return found
+
+
+def latest_handle_request(
+    comments: List[dict], bot: str, since: float = 0,
+) -> Tuple[str, str, float]:
+    """The latest of :func:`handle_requests`, or ``("", "", 0)``."""
+    found = handle_requests(comments, bot, since)
+    return found[-1] if found else ("", "", 0)
 
 
 def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:
@@ -213,10 +223,18 @@ def post_comment(owner: str, repo: str, number: str, body: str) -> None:
 
 
 def create_issue(owner: str, repo: str, title: str, body: str) -> str:
-    """Open an issue in *owner/repo* and return its URL (credentials are redacted)."""
-    from app.github import issue_create
+    """Open an issue in *owner/repo* and return its URL (credentials are redacted).
 
-    return issue_create(title, body, repo=f"{owner}/{repo}").strip()
+    One attempt only: a creation that timed out or answered 502 has often
+    happened, and retrying it would open the issue twice.
+    """
+    from app.leak_detector import scan_and_redact
+
+    return run_gh(
+        "issue", "create", "--title", scan_and_redact(title, context="Issue title"),
+        "--body", scan_and_redact(body, context="Issue body"),
+        "--repo", f"{owner}/{repo}", max_attempts=1,
+    ).strip()
 
 
 def assign_self(owner: str, repo: str, number: str) -> bool:

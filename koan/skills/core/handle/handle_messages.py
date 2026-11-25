@@ -146,6 +146,11 @@ _TEMPLATES = {
             "written. To change them, ask again in other words: a new draft replaces "
             "this one."
         ),
+        "nothing_to_confirm": (
+            "{mention}There is no draft of yours waiting for a confirmation here (it was "
+            "opened already, replaced by a newer one, or is somebody else's). `confirm` "
+            "does nothing else: to move this pipeline, comment `@{bot} handle`."
+        ),
         "follow_ups_created": "{mention}As confirmed, I opened:\n\n{issues}",
         "follow_ups_failed": (
             "{mention}I couldn't open the follow-up issue you confirmed: `{error}`. "
@@ -289,6 +294,11 @@ _TEMPLATES = {
             "{drafts}\n\nCommentez `@{bot} handle confirm` pour les ouvrir tels quels. "
             "Pour les modifier, redemandez autrement : un nouveau brouillon remplace "
             "celui-ci."
+        ),
+        "nothing_to_confirm": (
+            "{mention}Aucun brouillon à vous n'attend de confirmation ici (il a déjà été "
+            "ouvert, remplacé par un plus récent, ou il est à quelqu'un d'autre). `confirm` "
+            "ne fait rien d'autre : pour faire avancer ce pipeline, commentez `@{bot} handle`."
         ),
         "follow_ups_created": "{mention}Comme confirmé, j'ai ouvert :\n\n{issues}",
         "follow_ups_failed": (

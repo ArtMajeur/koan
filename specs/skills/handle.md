@@ -359,7 +359,8 @@ the requester has read it.
   not newer than it is ignored. The mark survives a pipeline that starts over.
 - **Draft.** One single-turn model call under the read-only role (`review_mode`) is given
   the issue, its thread and the request, and answers with a JSON list of issues (title,
-  body), at most 3, empty unless the request explicitly asks for a new issue. The
+  body), at most 3, empty unless the request explicitly asks for a new issue. A body
+  is cut at 8000 characters. The
   drafts are defused before anything else sees them: `@` mentions and `#123` / `GH-123`
   references (in code spans too), HTML comments removed, raw HTML tags and character
   entities made inert, control characters removed. What the requester reads in the
@@ -377,17 +378,21 @@ the requester has read it.
 
 ### Confirmation → issues
 
-- **What confirms.** A human poke whose own words begin with `confirm` (`@<bot> handle
-  confirm`), from **the author of the pending proposal**, still authorized on the
-  repository. Anyone else's `confirm` is an ordinary poke, and so is a `confirm` with no
-  proposal pending.
-- **A confirmation only confirms.** The tick opens the issues and stops: it does not
-  resume a gate, start a fix round or approve a data change. This is the one human poke
-  that does not move the pipeline.
+- **What confirms.** A `@<bot> handle` comment whose own words are `confirm` and nothing
+  else (`@<bot> handle confirm`), from **the author of the pending proposal**, written
+  after it, its author still authorized on the repository. "Confirmed by QA, go on" is
+  an answer to a gate, not a confirmation.
+- **A `confirm` never moves the pipeline**, whether it confirms or not. The tick opens
+  the issues, or replies that no draft of the commenter's is pending (already opened,
+  replaced, somebody else's), and stops: it does not resume a gate, start a fix round or
+  approve a data change. Every `@<bot> handle` comment since the previous tick is
+  looked at, not only the latest: a comment posted after a `confirm`, by anyone, does
+  not turn that tick back into an ordinary poke.
 - **What is opened** is the stored draft, never the proposal comment's text nor a new
   model answer. The proposal is cleared before the first creation, so it is opened once;
-  issues are created one by one in the issue's own repository through `issue_create`
-  (credentials redacted), each ending with a link back. The reply lists those that
+  issues are created one by one in the issue's own repository (credentials redacted),
+  each ending with a link back, and each in a single attempt: a creation that timed out
+  has often happened, and a retry would open it twice. The reply lists those that
   exist, then the error that stopped the rest, if any. A reply that cannot be posted
   does not fail the tick (the opened URLs are logged).
 
@@ -540,7 +545,11 @@ resumes once someone has replied in either thread.
   the first. Ask or confirm again.
 - A request or confirmation written on a PR that an issue's pipeline owns is not seen (the
   tick reads the issue's thread); use the issue.
-- A proposal does not expire: it stays pending until confirmed or replaced.
+- A proposal does not expire: it stays pending until confirmed or replaced, through a
+  pipeline that starts over too. After a transfer it opens in the issue's new repository.
+- Code in `~~~` fences is left out of a request like code in backtick fences; code
+  indented by four spaces is not recognised and reads as the requester's words (it can
+  only reach a draft).
 - Triage's Read/Glob/Grep are not path-scoped to the checkout; redaction covers known
   token formats only, not arbitrary file contents. The tool list is the `allowed_tools`
   convention `/ask`, `/explain` and `/plan` share: a pre-approval, not a denial — with
