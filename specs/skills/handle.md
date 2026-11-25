@@ -545,6 +545,11 @@ resumes once someone has replied in either thread.
   the first. Ask or confirm again.
 - A request or confirmation written on a PR that an issue's pipeline owns is not seen (the
   tick reads the issue's thread); use the issue.
+- A comment's author is who GitHub says wrote it, even after someone with write access to
+  the repository edited it: such a person could turn a requester's comment into a
+  `confirm` before the tick reads it.
+- The follow-up pre-check passes on ordinary sentences (each costs a model call and posts
+  nothing) and misses some phrasings ("spin off a follow-up").
 - A proposal does not expire: it stays pending until confirmed or replaced, through a
   pipeline that starts over too. After a transfer it opens in the issue's new repository.
 - Code in `~~~` fences is left out of a request like code in backtick fences; code
