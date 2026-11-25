@@ -119,6 +119,25 @@ def reset_record(instance_dir: str, issue_url: str, **keep) -> None:
     _modify(instance_dir, _change)
 
 
+def rename_record(instance_dir: str, old_url: str, new_url: str, **changes) -> dict:
+    """Move *old_url*'s record to *new_url* (a transferred issue) and return it.
+
+    Returns an empty dict, and writes nothing, when *old_url* has no record or
+    *new_url* already has one.
+    """
+    record = {}
+
+    def _change(data: dict) -> bool:
+        if not data.get(old_url) or data.get(new_url):
+            return False
+        record.update(data.pop(old_url), **changes, updated_at=time.time())
+        data[new_url] = record
+        return True
+
+    _modify(instance_dir, _change)
+    return record
+
+
 def find_issue_for_pr(instance_dir: str, pr_url: str) -> Optional[str]:
     """Return the key of the record tracking *pr_url*, if any.
 

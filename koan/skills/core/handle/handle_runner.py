@@ -21,7 +21,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 from app import handle_state
 from skills.core.handle import handle_ci, handle_data_guard
 from skills.core.handle import handle_github as gh
-from skills.core.handle.handle_messages import render
+from skills.core.handle.handle_messages import marked_key, render, with_marker
 from skills.core.handle.handle_parse import (
     has_plan,
     open_questions,
@@ -111,10 +111,9 @@ class Tick:
         self.record = handle_state.update_record(self.instance_dir, self.issue_url, **changes)
 
     def comment(self, key: str, **values) -> None:
-        gh.post_comment(
-            self.owner, self.repo, self.number,
-            render(key, mention=self.mention, bot=self.bot, **values),
-        )
+        values.setdefault("mention", self.mention)
+        body = render(key, bot=self.bot, **values)
+        gh.post_comment(self.owner, self.repo, self.number, with_marker(body, self.issue_url))
 
 
 def _mention(login: str) -> str:
@@ -187,8 +186,43 @@ def _load_tick(
         after=_after_tag(context), issue=issue,
     )
     tick.comments = gh.fetch_comments(owner, repo, number)
+    if not tick.record:
+        tick.record = _follow_transfer(tick)
     tick.requester = _resolve_requester(tick)
     return tick
+
+
+def _follow_transfer(tick: Tick) -> dict:
+    """The record this issue had under its previous URL, renamed to the current one.
+
+    A transfer gives the issue a new URL; the bot's own comments moved with it
+    and still name the old record key.
+    """
+    from app.github_url_parser import parse_github_url
+
+    old_url = next((
+        key for key in (
+            marked_key(c.get("body") or "") for c in reversed(tick.comments)
+            if gh.same_login(c.get("author") or "", tick.bot)
+        ) if key
+    ), "")
+    if not old_url or handle_state.same_pr_url(old_url, tick.issue_url):
+        return {}
+    if not handle_state.load_record(tick.instance_dir, old_url):
+        return {}
+    try:
+        owner, repo, _kind, number = parse_github_url(old_url)
+        now_at = gh.fetch_issue(owner, repo, number).get("html_url", "")
+    except (ValueError, RuntimeError) as e:
+        print(f"[handle] cannot check where {old_url} moved: {e}", file=sys.stderr)
+        return {}
+    # GitHub redirects a transferred issue's old URL; anything else is a
+    # marker quoted from another issue, which must not move that record.
+    if not handle_state.same_pr_url(now_at, tick.issue_url):
+        return {}
+    print(f"[handle] {old_url} was transferred to {tick.issue_url}", file=sys.stderr)
+    return handle_state.rename_record(
+        tick.instance_dir, old_url, tick.issue_url, project=tick.project_name)
 
 
 def _after_tag(context: str) -> str:
@@ -245,10 +279,10 @@ def _fail(
         record = tick.record if tick else handle_state.load_record(instance_dir, issue_url)
         phase = record.get("phase", "")
         requester = record.get("requester", "")
-        gh.post_comment(*target, render(
+        gh.post_comment(*target, with_marker(render(
             "error", mention=_mention(requester), bot=bot,
             phase=phase or "start", error=detail,
-        ))
+        ), issue_url))
         if phase and phase != "waiting_human":  # keep a gate's own resume target
             handle_state.update_record(
                 instance_dir, issue_url, phase="waiting_human", resume="retry", failed_phase=phase,
@@ -681,8 +715,7 @@ def _resume(tick: Tick) -> Result:
     if not _replied_since_gate(tick):
         # A poke queued while the tick that opened this gate was running
         # predates its question: resuming would redo the step unanswered.
-        gh.post_comment(tick.owner, tick.repo, tick.number,
-                        render("gate_open", mention="", bot=tick.bot))
+        tick.comment("gate_open", mention="")
         tick.milestone, tick.note = "gate", "Still waiting for an answer in the thread"
         return True, f"Gate still open on {tick.issue_url}: no reply since the question"
     return _RESUME[resume](tick)

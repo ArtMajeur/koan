@@ -69,6 +69,7 @@ class FakeGitHub:
         self.files = []
         self.changed_files = None
         self.head_after_listing = None
+        self.redirects = {}  # old issue URL → where GitHub now serves it
 
     def install(self, enter):
         gh = handle_runner.gh
@@ -81,7 +82,8 @@ class FakeGitHub:
         enter(patch.object(handle_ci, "ci_at_head", lambda branch, repo, head: self.ci_state))
 
     def fetch_issue(self, owner, repo, number):
-        return dict(self.issue)
+        url = f"https://github.com/{owner}/{repo}/issues/{number}"
+        return {**self.issue, "html_url": self.redirects.get(url, self.issue["html_url"])}
 
     def fetch_comments(self, owner, repo, number):
         if self.fail_comments_with:
@@ -1106,6 +1108,71 @@ class TestGateResume:
         pipeline.run()
         assert pipeline.record()["phase"] == "planning"
         assert f"/plan {ISSUE}" in pipeline.pending()[0]
+
+
+OLD_ISSUE = "https://github.com/owner/app/issues/33"
+
+
+class TestTransferredIssue:
+    """A transfer changes the issue's URL; the pipeline follows it."""
+
+    def _gate_then_transfer(self, pipeline):
+        """Gate on triage as OLD_ISSUE, then move the thread to ISSUE."""
+        github = pipeline.github
+        github.issue["html_url"] = OLD_ISSUE
+        pipeline.set_triage(_triage_output("needs_human", ["Which currency?"]))
+        pipeline.run(url=OLD_ISSUE)
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE)["resume"] == "triage"
+        github.comments.append(
+            {"author": BOT, "body": github.posted[-1], "created_at": time.time()})
+        github.issue["html_url"] = ISSUE
+        github.redirects[OLD_ISSUE] = ISSUE
+
+    def test_every_comment_names_its_record(self, pipeline):
+        pipeline.run()
+        assert pipeline.github.posted[0].endswith(f"<!-- koan-handle: {ISSUE} -->")
+
+    def test_poke_after_a_transfer_finds_the_gate_it_left(self, pipeline):
+        self._gate_then_transfer(pipeline)
+        pipeline.set_triage(RuntimeError("triage must not run again unanswered"))
+        pipeline.run()
+        record = pipeline.record()
+        assert (record["phase"], record["resume"]) == ("waiting_human", "triage")
+        assert "still waiting for a reply" in pipeline.github.posted[-1]
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE) == {}
+
+    def test_answer_after_a_transfer_resumes_under_the_new_url(self, pipeline):
+        self._gate_then_transfer(pipeline)
+        pipeline.set_triage(_triage_output("go"))
+        pipeline.github.comments.append(
+            {"author": "dev", "body": f"Euros. @{BOT} handle", "created_at": time.time() + 5})
+        pipeline.run()
+        record = pipeline.record()
+        assert (record["phase"], record["project"]) == ("planning", "proj")
+        assert f"/plan {ISSUE}" in pipeline.pending()[0]
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE) == {}
+
+    def test_quoted_marker_cannot_take_over_another_record(self, pipeline):
+        """The marker names a record GitHub does not redirect to this issue."""
+        handle_state.update_record(pipeline.instance_dir, OLD_ISSUE, phase="done", requester="lead")
+        pipeline.github.redirects[OLD_ISSUE] = OLD_ISSUE  # still its own issue
+        pipeline.github.comments.append({
+            "author": BOT, "created_at": 0.5,
+            "body": f"Summary.\n\n<!-- koan-handle: {OLD_ISSUE} -->",
+        })
+        pipeline.run()
+        assert pipeline.record()["phase"] == "planning"
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE)["phase"] == "done"
+
+    def test_marker_in_a_humans_comment_is_ignored(self, pipeline):
+        handle_state.update_record(pipeline.instance_dir, OLD_ISSUE, phase="done")
+        pipeline.github.redirects[OLD_ISSUE] = ISSUE
+        pipeline.github.comments.insert(0, {
+            "author": "reporter", "created_at": 0.5,
+            "body": f"<!-- koan-handle: {OLD_ISSUE} -->",
+        })
+        pipeline.run()
+        assert handle_state.load_record(pipeline.instance_dir, OLD_ISSUE)["phase"] == "done"
 
 
 class TestProjectQaConfig:

@@ -1103,6 +1103,40 @@ def _handle_carries_issue(notification: dict, instance_dir: str) -> bool:
         return False
 
 
+def _bot_assigned_itself(notification: dict, config: dict) -> bool:
+    """True when the bot's latest ``assigned`` event on the issue is its own doing.
+
+    /handle assigns the bot to the issue it carries. The /handle record tells
+    that apart from a request while the issue keeps its URL; a transferred
+    issue gets a new one, and GitHub sends the assignment again under it. The
+    timeline moves with the issue, so it still says who made the assignment.
+    """
+    from app.github import api as gh_api
+
+    bot = get_github_nickname(config).lower()
+    subject_url = notification.get("subject", {}).get("url", "")
+    api_prefix = "https://api.github.com/"
+    if not (bot and subject_url.startswith(api_prefix)):
+        return False
+    try:
+        raw = gh_api(
+            f"{subject_url[len(api_prefix):]}/timeline",
+            jq='.[] | select(.event == "assigned") | [.assignee.login, .actor.login] | @tsv',
+            extra_args=["--paginate"], timeout=30,
+        )
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        # Best-effort, like the /handle record check: an unreadable timeline
+        # must not break the assignment path.
+        log.error("GitHub assign: timeline unreadable, not skipping: %s", e)
+        return False
+    assigners = [
+        actor.strip().lower()
+        for assignee, _, actor in (line.partition("\t") for line in (raw or "").splitlines())
+        if assignee.strip().lower() == bot
+    ]
+    return bool(assigners) and assigners[-1] == bot
+
+
 def _try_assignment_notification(
     notification: dict,
     registry: SkillRegistry,
@@ -1177,6 +1211,15 @@ def _try_assignment_notification(
     if reason == "assign" and _handle_carries_issue(notification, instance_dir):
         log.info(
             "GitHub assign: %s/%s issue is carried by /handle — not queuing /implement",
+            owner, repo,
+        )
+        mark_notification_read(notif_id)
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+        return True
+
+    if reason == "assign" and _bot_assigned_itself(notification, config):
+        log.info(
+            "GitHub assign: the bot assigned itself on %s/%s — not queuing /implement",
             owner, repo,
         )
         mark_notification_read(notif_id)
