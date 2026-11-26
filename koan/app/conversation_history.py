@@ -7,9 +7,34 @@ any messaging provider.
 
 import contextlib
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
+
+# How far back load_recent_history looks for a conversation's own turns. The
+# file is shared by every thread and compacted hourly, so a bounded tail is
+# enough to find a thread's recent turns without reading the whole file.
+_CONVERSATION_SCAN_LINES = 200
+
+# Notifications shown to a conversation they were not posted in. Capped so a
+# burst of notifications cannot push a thread's own turns out of its window.
+_SHARED_NOTIFICATION_LIMIT = 3
+
+
+# Which conversation (Slack thread) and sender the message being handled
+# comes from. Thread-local like the notify reply context: the bridge sets it
+# per inbound message and carries it into worker threads, so every writer of a
+# chat turn (chat replies, skills such as sparring) can tag its conversation.
+_chat_origin = threading.local()
+
+
+def set_chat_origin(conversation: str, sender: str) -> None:
+    _chat_origin.value = (conversation, sender)
+
+
+def get_chat_origin() -> Tuple[str, str]:
+    return getattr(_chat_origin, "value", ("", ""))
 
 
 def _atomic_write(path: Path, content: str):
@@ -44,6 +69,8 @@ def save_conversation_message(
     text: str,
     message_id: int = 0,
     message_type: str = "",
+    conversation: str = "",
+    sender: str = "",
 ):
     """Save a message to the conversation history file (JSONL format).
 
@@ -53,6 +80,9 @@ def save_conversation_message(
         text: Message content
         message_id: Telegram message_id for reaction correlation (0 = unknown)
         message_type: Origin context tag (e.g., "chat", "conclusion", "notification")
+        conversation: Conversation the turn belongs to (Slack thread_ts; empty
+            for providers without threads)
+        sender: Who sent a user turn, when the provider exposes it
     """
     message = {
         "timestamp": datetime.now().isoformat(),
@@ -63,6 +93,10 @@ def save_conversation_message(
         message["message_id"] = message_id
     if message_type:
         message["message_type"] = message_type
+    if conversation:
+        message["conversation"] = conversation
+    if sender:
+        message["sender"] = sender
     try:
         from app.locked_file import locked_jsonl_append
         locked_jsonl_append(history_file, message)
@@ -70,12 +104,46 @@ def save_conversation_message(
         print(f"[conversation_history] Error saving message to history: {e}")
 
 
-def load_recent_history(history_file: Path, max_messages: int = 10) -> List[Dict[str, str]]:
+def _is_shared_notification(message: Dict) -> bool:
+    """True for an outbox notification posted outside any conversation.
+
+    Threads often reply to these, so every conversation sees them. They can
+    still quote what someone asked for (mission titles, mission results), so
+    they are labelled as notifications and capped, not trusted.
+    """
+    return (
+        message.get("role") == "assistant"
+        and message.get("message_type") == "notification"
+        and not message.get("conversation")
+    )
+
+
+def _select_conversation(messages: List[Dict], conversation: str) -> List[Dict]:
+    """Keep a conversation's own turns plus its most recent shared notifications."""
+    selected = []
+    shared_left = _SHARED_NOTIFICATION_LIMIT
+    for message in reversed(messages):
+        if message.get("conversation", "") == conversation:
+            selected.append(message)
+        elif _is_shared_notification(message) and shared_left > 0:
+            selected.append(message)
+            shared_left -= 1
+    selected.reverse()
+    return selected
+
+
+def load_recent_history(
+    history_file: Path,
+    max_messages: int = 10,
+    conversation: Optional[str] = None,
+) -> List[Dict[str, str]]:
     """Load the most recent messages from conversation history.
 
     Args:
         history_file: Path to the history file
         max_messages: Maximum number of recent messages to return
+        conversation: When given, keep only that conversation's turns ("" is
+            the conversation of untagged turns). None keeps every turn.
 
     Returns:
         List of message dicts with keys: timestamp, role, text
@@ -83,17 +151,26 @@ def load_recent_history(history_file: Path, max_messages: int = 10) -> List[Dict
     if not history_file.exists():
         return []
 
+    # Over-read a few lines so blank/malformed lines dropped by the parser
+    # can't shrink the window below max_messages. When filtering by
+    # conversation, read further back so other threads can't crowd it out.
+    if conversation is None:
+        tail_lines = max_messages + 5
+    else:
+        tail_lines = max(_CONVERSATION_SCAN_LINES, max_messages + 5)
+
     try:
         from app.locked_file import locked_jsonl_tail
         # Tail from EOF instead of reading the whole append-only file (#2354).
-        # Over-read a few lines so blank/malformed lines dropped by the parser
-        # can't shrink the window below max_messages.
-        lines = locked_jsonl_tail(history_file, max_messages + 5)
-        messages = _parse_jsonl_lines(lines)
-        return messages[-max_messages:] if len(messages) > max_messages else messages
+        lines = locked_jsonl_tail(history_file, tail_lines)
     except OSError as e:
         print(f"[conversation_history] Error loading history: {e}")
         return []
+
+    messages = _parse_jsonl_lines(lines)
+    if conversation is not None:
+        messages = _select_conversation(messages, conversation)
+    return messages[-max_messages:] if len(messages) > max_messages else messages
 
 
 def format_conversation_history(
@@ -115,7 +192,14 @@ def format_conversation_history(
     lines = ["Recent conversation:"]
     total = len(lines[0])
     for msg in messages:
-        role_label = "Human" if msg["role"] == "user" else "K\u014dan"
+        if msg.get("message_type") == "notification":
+            role_label = "K\u014dan (notification)"
+        elif msg["role"] != "user":
+            role_label = "K\u014dan"
+        elif msg.get("sender"):
+            role_label = f"Human ({msg['sender']})"
+        else:
+            role_label = "Human"
         text = msg["text"]
         if len(text) > 500:
             text = text[:500] + "..."

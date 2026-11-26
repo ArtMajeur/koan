@@ -1567,6 +1567,29 @@ class TestMainLoop:
     @patch("app.awake.check_config")
     @patch("app.awake.CHAT_ID", TEST_CHAT_ID)
     @patch("app.awake.time.sleep", side_effect=StopIteration)  # Break after first iteration
+    def test_main_sets_chat_origin_from_envelope(self, mock_sleep, mock_config, mock_updates,
+                                                 mock_handle, mock_flush, mock_heartbeat):
+        """A Slack-shaped message is handled with its thread and sender as chat origin."""
+        from app.awake import _bridge_loop
+        from app.conversation_history import get_chat_origin
+        seen = []
+        mock_handle.side_effect = lambda text: seen.append(get_chat_origin())
+        mock_updates.return_value = [{"update_id": 100, "message": {
+            "text": "hello", "chat": {"id": int(self.TEST_CHAT_ID)},
+            "conversation": "1.0", "from": {"id": "U100"},
+        }}]
+        with pytest.raises(StopIteration):
+            _bridge_loop()
+        assert seen == [("1.0", "U100")]
+        assert get_chat_origin() == ("", "")
+
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake.CHAT_ID", TEST_CHAT_ID)
+    @patch("app.awake.time.sleep", side_effect=StopIteration)  # Break after first iteration
     def test_main_processes_updates(self, mock_sleep, mock_config, mock_updates,
                                     mock_handle, mock_flush, mock_heartbeat):
         """main() fetches updates, dispatches messages, flushes outbox, writes heartbeat."""

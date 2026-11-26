@@ -4,7 +4,7 @@ title: "Slack Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Slack (Socket Mode app setup, scopes, env vars) plus Slack-specific behavior like threading, reactions, and the assistant \"thinking\" status."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-08-31
+updated: 2026-11-26
 ---
 
 # Slack Setup Guide
@@ -219,6 +219,15 @@ You should see in the logs:
 - **Threads continue without re-mentioning**: Once Kōan is engaged in a thread,
   you can keep replying in that thread without @mentioning it each time — it
   recognizes threads it is already participating in and keeps answering there.
+- **Each thread has its own memory**: Kōan remembers the recent chat of the
+  thread you are in, not the whole channel, plus its last few notifications
+  (such as "mission done"). What someone says in one thread never shapes
+  Kōan's replies in another thread, and in its memory each message is
+  labelled with the Slack user who sent it. A request like "your name is now
+  X" is not carried forward, and a "from now on…" request (language, length)
+  applies only to the person who made it, in their own thread. This memory is
+  short: the whole chat history is compacted every hour by default
+  (`conversation.compact_interval_seconds`).
 - **De-duplication**: Slack delivers both an `app_mention` and a `message` event
   for the same channel mention; Kōan acts on it exactly once.
 - **"Thinking" status**: While Kōan works on a chat reply, it shows a rotating

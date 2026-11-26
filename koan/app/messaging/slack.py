@@ -499,6 +499,9 @@ class SlackProvider(MessagingProvider):
                 "text": text,
                 "chat": {"id": self._channel_id},
                 "message_id": token,
+                # Chat history is scoped per thread and labelled by sender.
+                "conversation": thread_ts,
+                "from": {"id": event.get("user", "")},
             }
         }
         update = Update(

@@ -379,6 +379,27 @@ class TestSparringResponse:
     @patch(_P_SUB)
     @patch(_P_PROMPT, return_value="prompt")
     @patch(_P_MODEL, return_value=None)
+    def test_response_saved_in_current_conversation(self, _model, _prompt, mock_sub, tmp_path):
+        """A sparring reply in a Slack thread is replayed in that thread."""
+        import json
+        from app.conversation_history import set_chat_origin
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        mock_sub.return_value = MagicMock(returncode=0, stdout="Deep thought")
+
+        from skills.core.sparring.handler import handle
+        set_chat_origin("1.0", "U100")
+        try:
+            handle(_make_ctx(instance))
+        finally:
+            set_chat_origin("", "")
+
+        saved = json.loads((instance / "conversation-history.jsonl").read_text())
+        assert saved["conversation"] == "1.0"
+
+    @patch(_P_SUB)
+    @patch(_P_PROMPT, return_value="prompt")
+    @patch(_P_MODEL, return_value=None)
     def test_claude_failure_returns_fallback(self, _model, _prompt, mock_sub, tmp_path):
         """Non-zero exit code returns a fallback message."""
         instance = tmp_path / "instance"

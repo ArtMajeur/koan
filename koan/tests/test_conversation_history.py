@@ -467,3 +467,127 @@ def test_load_recent_history_skips_blank_and_malformed(tmp_path):
     recent = load_recent_history(hist, max_messages=10)
     assert len(recent) == 10
     assert recent[-1]["text"] == "msg-11"
+
+
+# --- per-conversation scoping and sender labels ---
+
+
+class TestConversationScoping:
+    """A chat prompt replays only its own conversation's turns."""
+
+    def test_saves_conversation_and_sender(self, history_file):
+        from app.conversation_history import save_conversation_message
+        save_conversation_message(
+            history_file, "user", "hi", conversation="111.1", sender="U100",
+        )
+        msg = json.loads(history_file.read_text().strip())
+        assert msg["conversation"] == "111.1"
+        assert msg["sender"] == "U100"
+
+    def test_omits_empty_conversation_and_sender(self, history_file):
+        from app.conversation_history import save_conversation_message
+        save_conversation_message(history_file, "user", "hi")
+        msg = json.loads(history_file.read_text().strip())
+        assert "conversation" not in msg
+        assert "sender" not in msg
+
+    def test_loads_only_matching_conversation(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(history_file, "user", "a1", conversation="A")
+        save_conversation_message(history_file, "user", "b1", conversation="B")
+        save_conversation_message(history_file, "user", "a2", conversation="A")
+        texts = [m["text"] for m in load_recent_history(history_file, conversation="A")]
+        assert texts == ["a1", "a2"]
+
+    def test_empty_conversation_matches_untagged_turns(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(history_file, "user", "legacy")
+        save_conversation_message(history_file, "user", "thread", conversation="A")
+        texts = [m["text"] for m in load_recent_history(history_file, conversation="")]
+        assert texts == ["legacy"]
+
+    def test_none_conversation_loads_everything(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(history_file, "user", "legacy")
+        save_conversation_message(history_file, "user", "thread", conversation="A")
+        assert len(load_recent_history(history_file)) == 2
+
+    def test_busy_other_threads_do_not_push_out_own_turns(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(history_file, "user", "mine", conversation="A")
+        for i in range(50):
+            save_conversation_message(history_file, "user", f"x{i}", conversation="B")
+        texts = [m["text"] for m in load_recent_history(history_file, conversation="A")]
+        assert texts == ["mine"]
+
+    def test_max_messages_applies_within_conversation(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        for i in range(5):
+            save_conversation_message(history_file, "user", f"a{i}", conversation="A")
+        msgs = load_recent_history(history_file, max_messages=2, conversation="A")
+        assert [m["text"] for m in msgs] == ["a3", "a4"]
+
+    def test_notifications_are_shown_to_every_conversation(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(
+            history_file, "assistant", "mission done", message_type="notification",
+        )
+        save_conversation_message(history_file, "user", "legacy question")
+        save_conversation_message(
+            history_file, "assistant", "legacy answer", message_type="chat",
+        )
+        save_conversation_message(history_file, "user", "follow-up", conversation="A")
+        texts = [m["text"] for m in load_recent_history(history_file, conversation="A")]
+        assert texts == ["mission done", "follow-up"]
+
+    def test_other_conversations_get_at_most_three_notifications(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(history_file, "user", "mine", conversation="A")
+        for i in range(12):
+            save_conversation_message(
+                history_file, "assistant", f"n{i}", message_type="notification",
+            )
+        texts = [m["text"] for m in load_recent_history(history_file, conversation="A")]
+        assert texts == ["mine", "n9", "n10", "n11"]
+
+    def test_untagged_conversation_keeps_all_its_notifications(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        for i in range(5):
+            save_conversation_message(
+                history_file, "assistant", f"n{i}", message_type="notification",
+            )
+        assert len(load_recent_history(history_file, conversation="")) == 5
+
+    def test_format_labels_notifications(self):
+        from app.conversation_history import format_conversation_history
+        out = format_conversation_history([
+            {"role": "assistant", "text": "mission done", "message_type": "notification"},
+            {"role": "assistant", "text": "a reply", "message_type": "chat"},
+        ])
+        assert "K\u014dan (notification): mission done" in out
+        assert "K\u014dan: a reply" in out
+
+    def test_format_labels_sender(self):
+        from app.conversation_history import format_conversation_history
+        out = format_conversation_history([
+            {"role": "user", "text": "hello", "sender": "U100"},
+            {"role": "user", "text": "plain"},
+        ])
+        assert "Human (U100): hello" in out
+        assert "Human: plain" in out

@@ -63,6 +63,8 @@ from app.config import (
     get_model_config,
 )
 from app.conversation_history import (
+    get_chat_origin,
+    set_chat_origin,
     save_conversation_message,
     load_recent_history,
     format_conversation_history,
@@ -301,7 +303,10 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         lite: If True, strip heavy context (journal, summary) to stay under budget.
     """
     # Load recent conversation history
-    history = load_recent_history(CONVERSATION_HISTORY_FILE, max_messages=10)
+    conversation, sender = get_chat_origin()
+    history = load_recent_history(
+        CONVERSATION_HISTORY_FILE, max_messages=10, conversation=conversation,
+    )
     history_context = format_conversation_history(history)
 
     journal_context = ""
@@ -425,6 +430,7 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         HISTORY=history_context or "",
         TIME_HINT=time_hint,
         TEXT=text,
+        SENDER=f"Sent by: {sender}" if sender else "",
     )
 
     # Inject language preference override
@@ -483,6 +489,13 @@ def _clean_chat_response(text: str, user_message: str = "") -> str:
     return expand_github_refs_auto(cleaned, user_message)
 
 
+def chat_origin_from_message(msg: dict) -> Tuple[str, str]:
+    """Return (conversation, sender) from a Telegram-shaped message envelope."""
+    sender_info = msg.get("from") or {}
+    sender = sender_info.get("username") or sender_info.get("id") or ""
+    return str(msg.get("conversation") or ""), str(sender)
+
+
 def _send_chat_reply(message: str, *, as_chat: bool = False) -> None:
     """Deliver a chat reply to Telegram and persist it to conversation history.
 
@@ -497,14 +510,17 @@ def _send_chat_reply(message: str, *, as_chat: bool = False) -> None:
     if send_telegram(message) is False:
         log("error", "Chat reply failed to send; not persisting to history.")
         return
+    conversation, _sender = get_chat_origin()
     if as_chat:
         msg_id = _get_last_message_id()
         save_conversation_message(
             CONVERSATION_HISTORY_FILE, "assistant", message,
-            message_id=msg_id, message_type="chat",
+            message_id=msg_id, message_type="chat", conversation=conversation,
         )
     else:
-        save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", message)
+        save_conversation_message(
+            CONVERSATION_HISTORY_FILE, "assistant", message, conversation=conversation,
+        )
 
 
 def handle_chat(text: str):
@@ -523,7 +539,11 @@ def handle_chat(text: str):
     from app.cli_exec import run_cli, CLI_RETRY_BACKOFF, CLI_RETRY_MAX_ATTEMPTS
 
     # Save user message to history
-    save_conversation_message(CONVERSATION_HISTORY_FILE, "user", text)
+    conversation, sender = get_chat_origin()
+    save_conversation_message(
+        CONVERSATION_HISTORY_FILE, "user", text,
+        conversation=conversation, sender=sender,
+    )
 
     # Scan for prompt injection — warn-only (never block chat; tools are read-only)
     from app.prompt_guard import scan_mission_text
@@ -760,13 +780,16 @@ def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
         raise ValueError(f"unknown worker lane: {lane!r}")
 
     reply_to = get_reply_context()
+    origin = get_chat_origin()
 
     def _wrapper():
         set_reply_context(reply_to)
+        set_chat_origin(*origin)
         try:
             fn(*args)
         finally:
             clear_reply_context()
+            set_chat_origin("", "")
 
     with _worker_lock:
         existing = _worker_threads[lane]
@@ -1387,6 +1410,7 @@ def _bridge_loop():
                     text = _strip_bot_mention_from_text(text, msg)
                     log("chat", f"Received: {text[:60]}")
                     set_reply_context(message_id)
+                    set_chat_origin(*chat_origin_from_message(msg))
                     try:
                         handle_message(text)
                     except Exception as e:
@@ -1397,6 +1421,7 @@ def _bridge_loop():
                             print(f"[bridge] error notification also failed: {notify_err}", file=sys.stderr)
                     finally:
                         clear_reply_context()
+                        set_chat_origin("", "")
 
             # After the first poll cycle, clear any stale signal files
             # left from a previous incarnation.  During the first poll
