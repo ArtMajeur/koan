@@ -866,6 +866,20 @@ class TestBuildDashboardPrompt:
         assert "You are Kōan" in prompt
 
 
+    def test_prompt_excludes_slack_thread_history(self, instance_dir):
+        from app.conversation_history import save_conversation_message
+        history = instance_dir / "history.jsonl"
+        save_conversation_message(history, "user", "dashboard turn")
+        save_conversation_message(history, "user", "slack thread turn", conversation="1.0")
+        with patch.object(dashboard.state, "CONVERSATION_HISTORY_FILE", history), \
+             patch.object(dashboard.state, "SOUL_FILE", instance_dir / "soul.md"), \
+             patch.object(dashboard.state, "SUMMARY_FILE", instance_dir / "memory" / "summary.md"), \
+             patch.object(dashboard.state, "INSTANCE_DIR", instance_dir), \
+             patch("app.dashboard.chat.get_tools_description", return_value=""):
+            prompt = dashboard.chat._build_dashboard_prompt("hello", lite=True)
+        assert "dashboard turn" in prompt
+        assert "slack thread turn" not in prompt
+
 class TestParseProject:
     def test_english_tag(self):
         project, text = dashboard.chat.parse_project("[project:koan] fix bug")

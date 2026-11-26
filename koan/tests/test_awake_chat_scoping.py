@@ -32,8 +32,10 @@ class TestChatOriginFromMessage:
         assert awake.chat_origin_from_message({}) == ("", "")
 
 
-def test_worker_inherits_chat_origin():
-    awake._worker_threads = {"chat": None, "bg": None, "maintenance": None}
+def test_worker_inherits_chat_origin(monkeypatch):
+    monkeypatch.setattr(
+        awake, "_worker_threads", {"chat": None, "bg": None, "maintenance": None},
+    )
     seen = {}
     done = threading.Event()
 

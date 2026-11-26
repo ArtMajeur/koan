@@ -537,6 +537,21 @@ class TestConversationScoping:
         msgs = load_recent_history(history_file, max_messages=2, conversation="A")
         assert [m["text"] for m in msgs] == ["a3", "a4"]
 
+    def test_notifications_are_shown_to_every_conversation(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(
+            history_file, "assistant", "mission done", message_type="notification",
+        )
+        save_conversation_message(history_file, "user", "legacy question")
+        save_conversation_message(
+            history_file, "assistant", "legacy answer", message_type="chat",
+        )
+        save_conversation_message(history_file, "user", "follow-up", conversation="A")
+        texts = [m["text"] for m in load_recent_history(history_file, conversation="A")]
+        assert texts == ["mission done", "follow-up"]
+
     def test_format_labels_sender(self):
         from app.conversation_history import format_conversation_history
         out = format_conversation_history([

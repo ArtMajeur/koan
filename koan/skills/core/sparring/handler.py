@@ -86,9 +86,15 @@ def handle(ctx):
             response = result.stdout.strip()
             response = response.replace("**", "").replace("```", "")
             # Save sparring response to conversation history
-            from app.conversation_history import save_conversation_message
+            from app.conversation_history import (
+                get_chat_origin,
+                save_conversation_message,
+            )
             history_file = instance_dir / "conversation-history.jsonl"
-            save_conversation_message(history_file, "assistant", response)
+            conversation, _sender = get_chat_origin()
+            save_conversation_message(
+                history_file, "assistant", response, conversation=conversation,
+            )
             return response
         else:
             if result.returncode != 0:

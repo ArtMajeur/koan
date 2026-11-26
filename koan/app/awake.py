@@ -63,6 +63,8 @@ from app.config import (
     get_model_config,
 )
 from app.conversation_history import (
+    get_chat_origin,
+    set_chat_origin,
     save_conversation_message,
     load_recent_history,
     format_conversation_history,
@@ -486,25 +488,11 @@ def _clean_chat_response(text: str, user_message: str = "") -> str:
     return expand_github_refs_auto(cleaned, user_message)
 
 
-# Which conversation (Slack thread) and sender the message being handled
-# comes from. Thread-local like the notify reply context, and carried into
-# worker threads by _run_in_worker, so chat history stays per conversation.
-_chat_origin = threading.local()
-
-
-def set_chat_origin(conversation: str, sender: str) -> None:
-    _chat_origin.value = (conversation, sender)
-
-
-def get_chat_origin() -> tuple:
-    return getattr(_chat_origin, "value", ("", ""))
-
-
-def chat_origin_from_message(msg: dict) -> tuple:
+def chat_origin_from_message(msg: dict) -> Tuple[str, str]:
     """Return (conversation, sender) from a Telegram-shaped message envelope."""
     sender_info = msg.get("from") or {}
     sender = sender_info.get("username") or sender_info.get("id") or ""
-    return str(msg.get("conversation", "")), str(sender)
+    return str(msg.get("conversation") or ""), str(sender)
 
 
 def _send_chat_reply(message: str, *, as_chat: bool = False) -> None:
@@ -800,6 +788,7 @@ def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
             fn(*args)
         finally:
             clear_reply_context()
+            set_chat_origin("", "")
 
     with _worker_lock:
         existing = _worker_threads[lane]
@@ -1431,6 +1420,7 @@ def _bridge_loop():
                             print(f"[bridge] error notification also failed: {notify_err}", file=sys.stderr)
                     finally:
                         clear_reply_context()
+                        set_chat_origin("", "")
 
             # After the first poll cycle, clear any stale signal files
             # left from a previous incarnation.  During the first poll

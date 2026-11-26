@@ -7,14 +7,30 @@ any messaging provider.
 
 import contextlib
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # How far back load_recent_history looks for a conversation's own turns. The
 # file is shared by every thread and compacted hourly, so a bounded tail is
 # enough to find a thread's recent turns without reading the whole file.
 _CONVERSATION_SCAN_LINES = 200
+
+
+# Which conversation (Slack thread) and sender the message being handled
+# comes from. Thread-local like the notify reply context: the bridge sets it
+# per inbound message and carries it into worker threads, so every writer of a
+# chat turn (chat replies, skills such as sparring) can tag its conversation.
+_chat_origin = threading.local()
+
+
+def set_chat_origin(conversation: str, sender: str) -> None:
+    _chat_origin.value = (conversation, sender)
+
+
+def get_chat_origin() -> Tuple[str, str]:
+    return getattr(_chat_origin, "value", ("", ""))
 
 
 def _atomic_write(path: Path, content: str):
@@ -84,6 +100,23 @@ def save_conversation_message(
         print(f"[conversation_history] Error saving message to history: {e}")
 
 
+def _in_conversation(message: Dict, conversation: str) -> bool:
+    """True if a turn belongs in ``conversation``'s replay.
+
+    Kōan's own notifications are posted outside any thread, and a thread is
+    often a reply to one of them, so they are shown to every conversation.
+    They are written by the bot, not typed by a user, so they cannot carry one
+    user's instructions into another user's conversation.
+    """
+    if message.get("conversation", "") == conversation:
+        return True
+    return (
+        message.get("role") == "assistant"
+        and message.get("message_type") == "notification"
+        and not message.get("conversation")
+    )
+
+
 def load_recent_history(
     history_file: Path,
     max_messages: int = 10,
@@ -121,7 +154,7 @@ def load_recent_history(
 
     messages = _parse_jsonl_lines(lines)
     if conversation is not None:
-        messages = [m for m in messages if m.get("conversation", "") == conversation]
+        messages = [m for m in messages if _in_conversation(m, conversation)]
     return messages[-max_messages:] if len(messages) > max_messages else messages
 
 
