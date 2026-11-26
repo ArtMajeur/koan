@@ -20,7 +20,9 @@ from app.bridge_state import (
     _get_registry,
     _reset_registry,
 )
+from app.conversation_history import get_chat_origin
 from app.notify import TypingIndicator, get_reply_context, send_telegram
+from app.notification_origin import record_mission_origin
 from app.signals import CYCLE_FILE, CYCLE_RELEASE_FILE, PAUSE_FILE, QUOTA_RESET_FILE, STOP_FILE
 from app.skills import Skill, SkillContext, SkillError, execute_skill
 from app.utils import (
@@ -1112,6 +1114,11 @@ def handle_mission(text: str):
 
     # Append to missions.md under pending section (with file locking)
     insert_pending_mission(MISSIONS_FILE, mission_entry, urgent=urgent)
+
+    # Keyed by the text without its project tag: that is the title the agent
+    # loop picks, and looks the origin up by, when it runs the mission.
+    conversation, _sender = get_chat_origin()
+    record_mission_origin(str(INSTANCE_DIR), mission_text, conversation)
 
     # Acknowledge with project info
     ack_msg = "✅ Mission received"

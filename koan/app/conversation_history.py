@@ -104,26 +104,32 @@ def save_conversation_message(
         print(f"[conversation_history] Error saving message to history: {e}")
 
 
+def _is_notification(message: Dict) -> bool:
+    return message.get("role") == "assistant" and message.get("message_type") == "notification"
+
+
 def _is_shared_notification(message: Dict) -> bool:
-    """True for an outbox notification posted outside any conversation.
+    """True for an outbox notification no mission conversation claimed.
 
     Threads often reply to these, so every conversation sees them. They can
     still quote what someone asked for (mission titles, mission results), so
     they are labelled as notifications and capped, not trusted.
     """
-    return (
-        message.get("role") == "assistant"
-        and message.get("message_type") == "notification"
-        and not message.get("conversation")
-    )
+    return _is_notification(message) and not message.get("conversation")
 
 
 def _select_conversation(messages: List[Dict], conversation: str) -> List[Dict]:
-    """Keep a conversation's own turns plus its most recent shared notifications."""
+    """Keep a conversation's own turns plus its most recent shared notifications.
+
+    A notification tagged with the conversation of the mission that produced
+    it is that conversation's own turn. The untagged conversation (Telegram,
+    dashboard) is where every notification is posted, so it keeps them all.
+    """
     selected = []
     shared_left = _SHARED_NOTIFICATION_LIMIT
     for message in reversed(messages):
-        if message.get("conversation", "") == conversation:
+        own = message.get("conversation", "") == conversation
+        if own or (conversation == "" and _is_notification(message)):
             selected.append(message)
         elif _is_shared_notification(message) and shared_left > 0:
             selected.append(message)

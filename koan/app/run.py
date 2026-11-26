@@ -1928,6 +1928,9 @@ def main_loop():
                 _handle_iteration_error(
                     e, consecutive_errors, koan_root, instance,
                 )
+            finally:
+                from app.notification_origin import set_outbox_conversation
+                set_outbox_conversation("")
 
     except KeyboardInterrupt:
         current = _read_current_project(koan_root)

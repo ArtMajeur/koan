@@ -940,6 +940,11 @@ def _run_iteration(
     project_name = plan["project_name"]
     project_path = plan["project_path"]
 
+    # This mission's notifications belong to the conversation that asked for
+    # it; main_loop resets the tag when the iteration ends.
+    from app.notification_origin import mission_conversation, set_outbox_conversation
+    set_outbox_conversation(mission_conversation(instance, plan.get("mission_title", "")))
+
     if action == "error":
         mission_title = plan.get("mission_title", "")
         log("error", mission_title if not plan.get("error") else plan["error"])

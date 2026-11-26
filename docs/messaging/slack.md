@@ -220,8 +220,10 @@ You should see in the logs:
   you can keep replying in that thread without @mentioning it each time — it
   recognizes threads it is already participating in and keeps answering there.
 - **Each thread has its own memory**: Kōan remembers the recent chat of the
-  thread you are in, not the whole channel, plus its last few notifications
-  (such as "mission done"). What someone says in one thread never shapes
+  thread you are in, not the whole channel. A notification about a mission
+  you asked for in a thread (such as "mission done") is remembered in that
+  thread only, even though it is posted in the channel; other notifications
+  are remembered everywhere, the last few of them. What someone says in one thread never shapes
   Kōan's replies in another thread, and in its memory each message is
   labelled with the Slack user who sent it. A request like "your name is now
   X" is not carried forward, and a "from now on…" request (language, length)

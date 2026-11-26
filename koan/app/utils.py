@@ -1458,6 +1458,11 @@ def append_to_outbox(outbox_path: Path, content: str, priority=None):
         except ImportError:
             pass  # If import fails, write without header (treated as action)
 
+    # While the agent loop runs a mission, its notifications belong to the
+    # conversation that asked for it (see app.notification_origin).
+    from app.notification_origin import outbox_header
+    content = outbox_header() + content
+
     with open(outbox_path, "a", encoding="utf-8") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:

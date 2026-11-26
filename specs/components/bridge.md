@@ -153,14 +153,36 @@ awake.py (loop, ~3s poll)
   `thread_ts`; empty for providers without threads and for the dashboard) and,
   when the provider exposes one, its `sender`. A chat prompt replays only the
   turns of its own conversation, so a message in one Slack thread cannot steer
-  replies in another thread. The one exception is the agent's outbox
-  notifications, which are posted outside any thread and which threads often
-  reply to: every conversation sees the last three of them. They are **not**
-  trusted text — a mission notification quotes the mission someone asked for
-  and the result it produced, after an AI rewrite — so they are labelled
-  `Kōan (notification)` and covered by the prompt rule below; tagging each
-  notification with the conversation of the mission that produced it is the
-  structural fix still to come. People who share one conversation (a Slack
+  replies in another thread. Outbox notifications are **not** trusted text — a
+  mission notification quotes the mission someone asked for and the result it
+  produced, after an AI rewrite — so every replayed notification is labelled
+  `Kōan (notification)` and covered by the prompt rule below, and a
+  notification produced by a mission belongs to the conversation that mission
+  was requested in:
+  - When a chat message is queued as a mission, the bridge records the
+    mission's origin conversation in the mission store's `mission_origins`
+    table, keyed by `canonical_mission_key` (the same identity the outcome log
+    uses, so it survives requeue and the store's rebuild-on-write). Nothing is
+    recorded for an empty conversation.
+  - While the agent loop runs a mission (from the plan until the iteration
+    ends), every `append_to_outbox` call in that process prefixes its block
+    with a `[conversation:<thread_ts>]` header naming that origin. The
+    conversation is never written into the mission text itself, so mission
+    text cannot choose it.
+  - The outbox flush strips those headers before formatting and saves the sent
+    notification with that `conversation`. A flush that merged blocks from
+    two or more different conversations is saved as the `mixed` conversation,
+    which no thread replays, so one thread's mission text never reaches
+    another thread. Headers are not authenticated: a forged header can only
+    narrow who replays a notification, never widen it.
+  - A thread replays the notifications tagged with its own conversation as
+    its own turns. The empty conversation (Telegram and the dashboard, where
+    notifications are posted) replays every notification, tagged or not, as
+    it always has. Notifications with no mission origin stay untagged and
+    every conversation sees the last three of them, because threads often
+    reply to them.
+  Delivery is unchanged: a tagged notification is still posted outside any
+  thread. People who share one conversation (a Slack
   thread, or Telegram and the dashboard, which share the empty conversation)
   also share its replay, and there too the prompt rule is the only defence.
   Replayed turns are labelled with their sender, the current message names its

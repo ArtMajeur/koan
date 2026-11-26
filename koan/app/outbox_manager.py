@@ -16,6 +16,7 @@ from typing import Optional, Tuple
 
 from app.bridge_log import log
 from app.conversation_history import save_conversation_message
+from app.notification_origin import parse_outbox_conversation
 from app.format_outbox import (
     fallback_format,
     format_message,
@@ -187,7 +188,8 @@ class OutboxManager:
             staging.unlink(missing_ok=True)
             return
 
-        priority, clean_content = parse_outbox_priority(content)
+        conversation, untagged = parse_outbox_conversation(content)
+        priority, clean_content = parse_outbox_priority(untagged)
         if is_below_min_priority(priority):
             # Headed for the journal, not chat — skip the LLM formatter call
             # and keep the full, untruncated text.
@@ -208,6 +210,7 @@ class OutboxManager:
             save_conversation_message(
                 self._conversation_history_file, "assistant", formatted,
                 message_id=msg_id, message_type="notification",
+                conversation=conversation,
             )
             preview = formatted[:150].replace("\n", " ")
             if len(formatted) > 150:

@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS mission_outcomes (
 CREATE INDEX IF NOT EXISTS idx_outcomes_key ON mission_outcomes(key);
 """
 
+_ORIGIN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mission_origins (
+    id           INTEGER PRIMARY KEY,
+    key          TEXT NOT NULL,
+    conversation TEXT NOT NULL,
+    recorded_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_origins_key ON mission_origins(key);
+"""
+
 
 class CiQueueStore:
     """The ``## CI`` monitoring queue (replaces the CI-section helpers)."""
@@ -314,3 +324,48 @@ class OutcomeStore:
                 "FROM mission_outcomes WHERE key=? ORDER BY id DESC LIMIT 1",
                 (self._key(text),)).fetchone()
         return dict(row) if row else None
+
+
+class OriginStore:
+    """The chat conversation (Slack ``thread_ts``) each mission was asked for in.
+
+    Keyed by ``canonical_mission_key`` like :class:`OutcomeStore`, so it
+    survives requeue and the per-write ``reconcile_all`` rebuild of the
+    missions table. The agent loop reads it to tag a mission's notifications
+    with that conversation. Never part of any export.
+    """
+
+    KEEP = 500  # cap rows; newest retained
+
+    def __init__(self, instance: str):
+        self._db = str(Path(instance) / "missions.db")
+        with _connect(self._db) as conn:
+            conn.executescript(_ORIGIN_SCHEMA)
+
+    @staticmethod
+    def _key(text: str) -> str:
+        from app.missions import canonical_mission_key
+        return canonical_mission_key(text)
+
+    def record(self, text: str, conversation: str) -> None:
+        """Remember where a mission was asked for; an empty conversation is skipped."""
+        if not conversation:
+            return
+        with _connect(self._db) as conn:
+            conn.execute(
+                "INSERT INTO mission_origins(key, conversation, recorded_at) "
+                "VALUES (?,?,?)",
+                (self._key(text), conversation, strftime("%Y-%m-%d %H:%M")))
+            conn.execute(
+                "DELETE FROM mission_origins WHERE id NOT IN "
+                "(SELECT id FROM mission_origins ORDER BY id DESC LIMIT ?)",
+                (self.KEEP,))
+
+    def conversation_for(self, text: str) -> str:
+        """Return the newest recorded conversation for a mission, or ""."""
+        with _connect(self._db) as conn:
+            row = conn.execute(
+                "SELECT conversation FROM mission_origins WHERE key=? "
+                "ORDER BY id DESC LIMIT 1",
+                (self._key(text),)).fetchone()
+        return row["conversation"] if row else ""
