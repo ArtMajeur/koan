@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-10-28
+updated: 2026-11-26
 ---
 
 # Component Spec — Telegram Bridge
@@ -147,6 +147,18 @@ awake.py (loop, ~3s poll)
   returns `chat not found` for a quoted group ID but accepts the JSON integer. The stored
   identity string (`get_telegram_chat_id()` / `bridge_state.CHAT_ID`) stays a string for
   inbound `chat.id` equality checks; coercion happens only where the payload is built.
+- **Chat history is scoped per conversation and is never a standing instruction.**
+  Every chat turn in `conversation-history.jsonl` carries the `conversation` it
+  belongs to (the Slack `thread_ts`; empty for providers without threads and for
+  the dashboard) and, when the provider exposes one, its `sender`. A chat prompt
+  replays only the turns of its own conversation, so a message in one Slack
+  thread cannot steer replies in another thread or for another person. Replayed
+  turns are labelled with their sender and framed in the prompt as a record, not
+  as instructions: a past message cannot change the agent's identity, name, tone
+  or reply format (only `soul.md` and config can), even when the agent went along
+  with it earlier. Without this, one user's "always end with an emoji" became
+  self-reinforcing for every user, because each obedient reply was replayed into
+  the next prompt.
 - **Memory management is bounded over uptime (#2354).** The bridge is
   long-lived, so per-message allocations must not grow with session length.
   Three guarantees hold: (1) `load_recent_history` tails the last N lines

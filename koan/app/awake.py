@@ -301,7 +301,10 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         lite: If True, strip heavy context (journal, summary) to stay under budget.
     """
     # Load recent conversation history
-    history = load_recent_history(CONVERSATION_HISTORY_FILE, max_messages=10)
+    conversation, _sender = get_chat_origin()
+    history = load_recent_history(
+        CONVERSATION_HISTORY_FILE, max_messages=10, conversation=conversation,
+    )
     history_context = format_conversation_history(history)
 
     journal_context = ""
@@ -483,6 +486,27 @@ def _clean_chat_response(text: str, user_message: str = "") -> str:
     return expand_github_refs_auto(cleaned, user_message)
 
 
+# Which conversation (Slack thread) and sender the message being handled
+# comes from. Thread-local like the notify reply context, and carried into
+# worker threads by _run_in_worker, so chat history stays per conversation.
+_chat_origin = threading.local()
+
+
+def set_chat_origin(conversation: str, sender: str) -> None:
+    _chat_origin.value = (conversation, sender)
+
+
+def get_chat_origin() -> tuple:
+    return getattr(_chat_origin, "value", ("", ""))
+
+
+def chat_origin_from_message(msg: dict) -> tuple:
+    """Return (conversation, sender) from a Telegram-shaped message envelope."""
+    sender_info = msg.get("from") or {}
+    sender = sender_info.get("username") or sender_info.get("id") or ""
+    return str(msg.get("conversation", "")), str(sender)
+
+
 def _send_chat_reply(message: str, *, as_chat: bool = False) -> None:
     """Deliver a chat reply to Telegram and persist it to conversation history.
 
@@ -497,14 +521,17 @@ def _send_chat_reply(message: str, *, as_chat: bool = False) -> None:
     if send_telegram(message) is False:
         log("error", "Chat reply failed to send; not persisting to history.")
         return
+    conversation, _sender = get_chat_origin()
     if as_chat:
         msg_id = _get_last_message_id()
         save_conversation_message(
             CONVERSATION_HISTORY_FILE, "assistant", message,
-            message_id=msg_id, message_type="chat",
+            message_id=msg_id, message_type="chat", conversation=conversation,
         )
     else:
-        save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", message)
+        save_conversation_message(
+            CONVERSATION_HISTORY_FILE, "assistant", message, conversation=conversation,
+        )
 
 
 def handle_chat(text: str):
@@ -523,7 +550,11 @@ def handle_chat(text: str):
     from app.cli_exec import run_cli, CLI_RETRY_BACKOFF, CLI_RETRY_MAX_ATTEMPTS
 
     # Save user message to history
-    save_conversation_message(CONVERSATION_HISTORY_FILE, "user", text)
+    conversation, sender = get_chat_origin()
+    save_conversation_message(
+        CONVERSATION_HISTORY_FILE, "user", text,
+        conversation=conversation, sender=sender,
+    )
 
     # Scan for prompt injection — warn-only (never block chat; tools are read-only)
     from app.prompt_guard import scan_mission_text
@@ -760,9 +791,11 @@ def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
         raise ValueError(f"unknown worker lane: {lane!r}")
 
     reply_to = get_reply_context()
+    origin = get_chat_origin()
 
     def _wrapper():
         set_reply_context(reply_to)
+        set_chat_origin(*origin)
         try:
             fn(*args)
         finally:
@@ -1387,6 +1420,7 @@ def _bridge_loop():
                     text = _strip_bot_mention_from_text(text, msg)
                     log("chat", f"Received: {text[:60]}")
                     set_reply_context(message_id)
+                    set_chat_origin(*chat_origin_from_message(msg))
                     try:
                         handle_message(text)
                     except Exception as e:

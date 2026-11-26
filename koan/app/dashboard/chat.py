@@ -36,7 +36,11 @@ def _build_dashboard_prompt(text: str, *, lite: bool = False) -> str:
     """
     from app.journal import read_all_journals
 
-    history = load_recent_history(state.CONVERSATION_HISTORY_FILE, max_messages=10)
+    # The dashboard shares the untagged conversation with Telegram, never a
+    # Slack thread's turns.
+    history = load_recent_history(
+        state.CONVERSATION_HISTORY_FILE, max_messages=10, conversation="",
+    )
     history_context = format_conversation_history(history)
 
     soul = read_file(state.SOUL_FILE)

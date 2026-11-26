@@ -370,6 +370,22 @@ class TestHandleSocketEvent:
         assert isinstance(env["message"]["message_id"], int)
         assert env["message"]["message_id"] != 0
 
+    def test_envelope_carries_thread_and_sender(self, provider):
+        # The bridge scopes chat history per Slack thread and labels the sender.
+        req = self._make_request(
+            "message", "C123", "<@U999> hi", ts="2.0", user="U100", thread_ts="1.0",
+        )
+        provider._handle_socket_event(MagicMock(), req)
+        env = provider._message_queue.get_nowait().raw_data
+        assert env["message"]["conversation"] == "1.0"
+        assert env["message"]["from"] == {"id": "U100"}
+
+    def test_envelope_root_message_is_its_own_conversation(self, provider):
+        req = self._make_request("app_mention", "C123", "<@U999> hi", ts="3.0")
+        provider._handle_socket_event(MagicMock(), req)
+        env = provider._message_queue.get_nowait().raw_data
+        assert env["message"]["conversation"] == "3.0"
+
     def test_update_counter_increments(self, provider):
         req1 = self._make_request("app_mention", "C123", "<@U999> first", ts="1.0")
         req2 = self._make_request("app_mention", "C123", "<@U999> second", ts="2.0")
