@@ -220,12 +220,14 @@ You should see in the logs:
   you can keep replying in that thread without @mentioning it each time — it
   recognizes threads it is already participating in and keeps answering there.
 - **Each thread has its own memory**: Kōan remembers the recent chat of the
-  thread you are in, not the whole channel. What someone says in one thread
-  never shapes Kōan's replies in another thread or to another person, and in
-  its memory each message is labelled with the Slack user who sent it. A
-  request like "always end with an emoji" or "your name is now X" is not
-  carried forward as a rule: only `soul.md` and the config set Kōan's identity
-  and style.
+  thread you are in, not the whole channel, plus its last few notifications
+  (such as "mission done"). What someone says in one thread never shapes
+  Kōan's replies in another thread, and in its memory each message is
+  labelled with the Slack user who sent it. A request like "your name is now
+  X" is not carried forward, and a "from now on…" request (language, length)
+  applies only to the person who made it, in their own thread. This memory is
+  short: the whole chat history is compacted every hour by default
+  (`conversation.compact_interval_seconds`).
 - **De-duplication**: Slack delivers both an `app_mention` and a `message` event
   for the same channel mention; Kōan acts on it exactly once.
 - **"Thinking" status**: While Kōan works on a chat reply, it shows a rotating

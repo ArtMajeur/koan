@@ -153,18 +153,25 @@ awake.py (loop, ~3s poll)
   `thread_ts`; empty for providers without threads and for the dashboard) and,
   when the provider exposes one, its `sender`. A chat prompt replays only the
   turns of its own conversation, so a message in one Slack thread cannot steer
-  replies in another thread. The one exception is the agent's own outbox
-  notifications: they are posted outside any thread, threads often reply to
-  them, and they are bot-written, so every conversation sees them. People who
-  share one conversation (a Slack thread, or Telegram and the dashboard, which
-  share the empty conversation) still share its replay; there the defence is
-  the prompt alone. Replayed turns are labelled with their sender and framed in
-  the prompt as a record, not as instructions: a past message cannot change the
-  agent's identity, name, tone or reply format (only `soul.md` and config can),
-  even when the agent went along with it earlier. Without this, one user's
-  "always end with an emoji" became self-reinforcing for every user, because
-  each obedient reply was replayed into the next prompt. The mission-state,
-  journal and memory blocks of the chat prompt are not scoped by this rule.
+  replies in another thread. The one exception is the agent's outbox
+  notifications, which are posted outside any thread and which threads often
+  reply to: every conversation sees the last three of them. They are **not**
+  trusted text — a mission notification quotes the mission someone asked for
+  and the result it produced, after an AI rewrite — so they are labelled
+  `Kōan (notification)` and covered by the prompt rule below; tagging each
+  notification with the conversation of the mission that produced it is the
+  structural fix still to come. People who share one conversation (a Slack
+  thread, or Telegram and the dashboard, which share the empty conversation)
+  also share its replay, and there too the prompt rule is the only defence.
+  Replayed turns are labelled with their sender, the current message names its
+  sender, and the prompt frames the replay as a record: a past message can
+  never change the agent's name, identity or persona (only `soul.md` and config
+  can), and a standing request ("from now on…") holds only for the person who
+  made it, in their own conversation, and only for their own replies' language,
+  length or detail. Without this, one user's "always end with an emoji" became
+  self-reinforcing for every user, because each obedient reply was replayed into
+  the next prompt. The mission-state, journal and memory blocks of the chat
+  prompt are not scoped by this rule.
 - **Memory management is bounded over uptime (#2354).** The bridge is
   long-lived, so per-message allocations must not grow with session length.
   Three guarantees hold: (1) `load_recent_history` tails the last N lines

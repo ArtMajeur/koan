@@ -303,7 +303,7 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         lite: If True, strip heavy context (journal, summary) to stay under budget.
     """
     # Load recent conversation history
-    conversation, _sender = get_chat_origin()
+    conversation, sender = get_chat_origin()
     history = load_recent_history(
         CONVERSATION_HISTORY_FILE, max_messages=10, conversation=conversation,
     )
@@ -430,6 +430,7 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         HISTORY=history_context or "",
         TIME_HINT=time_hint,
         TEXT=text,
+        SENDER=f"Sent by: {sender}" if sender else "",
     )
 
     # Inject language preference override

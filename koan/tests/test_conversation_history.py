@@ -552,6 +552,37 @@ class TestConversationScoping:
         texts = [m["text"] for m in load_recent_history(history_file, conversation="A")]
         assert texts == ["mission done", "follow-up"]
 
+    def test_other_conversations_get_at_most_three_notifications(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        save_conversation_message(history_file, "user", "mine", conversation="A")
+        for i in range(12):
+            save_conversation_message(
+                history_file, "assistant", f"n{i}", message_type="notification",
+            )
+        texts = [m["text"] for m in load_recent_history(history_file, conversation="A")]
+        assert texts == ["mine", "n9", "n10", "n11"]
+
+    def test_untagged_conversation_keeps_all_its_notifications(self, history_file):
+        from app.conversation_history import (
+            load_recent_history, save_conversation_message,
+        )
+        for i in range(5):
+            save_conversation_message(
+                history_file, "assistant", f"n{i}", message_type="notification",
+            )
+        assert len(load_recent_history(history_file, conversation="")) == 5
+
+    def test_format_labels_notifications(self):
+        from app.conversation_history import format_conversation_history
+        out = format_conversation_history([
+            {"role": "assistant", "text": "mission done", "message_type": "notification"},
+            {"role": "assistant", "text": "a reply", "message_type": "chat"},
+        ])
+        assert "K\u014dan (notification): mission done" in out
+        assert "K\u014dan: a reply" in out
+
     def test_format_labels_sender(self):
         from app.conversation_history import format_conversation_history
         out = format_conversation_history([

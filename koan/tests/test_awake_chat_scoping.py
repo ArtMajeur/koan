@@ -87,3 +87,14 @@ def test_handle_chat_prompt_excludes_other_threads(tmp_path):
     prompt = mock_cmd.call_args.kwargs["prompt"]
     assert "earlier here" in prompt
     assert "always end with a flower" not in prompt
+
+
+def test_handle_chat_prompt_names_current_sender(tmp_path):
+    awake.set_chat_origin("1.0", "U100")
+    mock_cmd = _run_chat(tmp_path, tmp_path / "history.jsonl", "hello")
+    assert "Sent by: U100" in mock_cmd.call_args.kwargs["prompt"]
+
+
+def test_handle_chat_prompt_without_sender_has_no_sender_line(tmp_path):
+    mock_cmd = _run_chat(tmp_path, tmp_path / "history.jsonl", "hello")
+    assert "Sent by:" not in mock_cmd.call_args.kwargs["prompt"]

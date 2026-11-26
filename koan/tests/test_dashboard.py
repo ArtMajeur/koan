@@ -2542,6 +2542,16 @@ class TestChatHistory:
         assert data["messages"][1]["content"] == "pong"
 
 
+    def test_history_view_excludes_slack_threads(self, app_client, instance_dir):
+        from app.conversation_history import save_conversation_message
+        hist = instance_dir / "conversation-history.jsonl"
+        save_conversation_message(hist, "user", "dashboard turn")
+        save_conversation_message(hist, "user", "slack thread turn", conversation="1.0")
+        with patch.object(dashboard.state, "CONVERSATION_HISTORY_FILE", hist):
+            resp = app_client.get("/chat/history")
+        contents = [m["content"] for m in resp.get_json()["messages"]]
+        assert contents == ["dashboard turn"]
+
 class TestProjectConfigEndpoints:
     def test_get_then_save_roundtrip(self, app_client, instance_dir):
         (instance_dir / "projects.yaml").write_text(

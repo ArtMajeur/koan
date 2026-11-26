@@ -85,7 +85,10 @@ def chat_history():
     Normalizes the stored ``text`` field to ``content`` so the chat template
     binds to a stable {role, content} shape.
     """
-    messages = load_recent_history(state.CONVERSATION_HISTORY_FILE, max_messages=20)
+    # Same conversation as the dashboard prompt sees: never Slack threads.
+    messages = load_recent_history(
+        state.CONVERSATION_HISTORY_FILE, max_messages=20, conversation="",
+    )
     normalized = []
     skipped = 0
     for m in messages:

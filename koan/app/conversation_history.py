@@ -17,6 +17,10 @@ from typing import Dict, List, Optional, Tuple
 # enough to find a thread's recent turns without reading the whole file.
 _CONVERSATION_SCAN_LINES = 200
 
+# Notifications shown to a conversation they were not posted in. Capped so a
+# burst of notifications cannot push a thread's own turns out of its window.
+_SHARED_NOTIFICATION_LIMIT = 3
+
 
 # Which conversation (Slack thread) and sender the message being handled
 # comes from. Thread-local like the notify reply context: the bridge sets it
@@ -100,21 +104,32 @@ def save_conversation_message(
         print(f"[conversation_history] Error saving message to history: {e}")
 
 
-def _in_conversation(message: Dict, conversation: str) -> bool:
-    """True if a turn belongs in ``conversation``'s replay.
+def _is_shared_notification(message: Dict) -> bool:
+    """True for an outbox notification posted outside any conversation.
 
-    Kōan's own notifications are posted outside any thread, and a thread is
-    often a reply to one of them, so they are shown to every conversation.
-    They are written by the bot, not typed by a user, so they cannot carry one
-    user's instructions into another user's conversation.
+    Threads often reply to these, so every conversation sees them. They can
+    still quote what someone asked for (mission titles, mission results), so
+    they are labelled as notifications and capped, not trusted.
     """
-    if message.get("conversation", "") == conversation:
-        return True
     return (
         message.get("role") == "assistant"
         and message.get("message_type") == "notification"
         and not message.get("conversation")
     )
+
+
+def _select_conversation(messages: List[Dict], conversation: str) -> List[Dict]:
+    """Keep a conversation's own turns plus its most recent shared notifications."""
+    selected = []
+    shared_left = _SHARED_NOTIFICATION_LIMIT
+    for message in reversed(messages):
+        if message.get("conversation", "") == conversation:
+            selected.append(message)
+        elif _is_shared_notification(message) and shared_left > 0:
+            selected.append(message)
+            shared_left -= 1
+    selected.reverse()
+    return selected
 
 
 def load_recent_history(
@@ -154,7 +169,7 @@ def load_recent_history(
 
     messages = _parse_jsonl_lines(lines)
     if conversation is not None:
-        messages = [m for m in messages if _in_conversation(m, conversation)]
+        messages = _select_conversation(messages, conversation)
     return messages[-max_messages:] if len(messages) > max_messages else messages
 
 
@@ -177,7 +192,9 @@ def format_conversation_history(
     lines = ["Recent conversation:"]
     total = len(lines[0])
     for msg in messages:
-        if msg["role"] != "user":
+        if msg.get("message_type") == "notification":
+            role_label = "K\u014dan (notification)"
+        elif msg["role"] != "user":
             role_label = "K\u014dan"
         elif msg.get("sender"):
             role_label = f"Human ({msg['sender']})"
