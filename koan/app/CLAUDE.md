@@ -53,7 +53,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`bridge_state.py`** — Shared module-level state for bridge (config, paths, registries); avoids circular imports
 - **`bridge_log.py`** — Colored log output for bridge process (mirrors run.py's `log()`)
 - **`notify.py`** — Telegram notification helper with flood protection
-- **`notification_origin.py`** — Ties a mission's outbox notifications to the chat conversation (Slack thread) it was asked for in: the bridge records the origin in `OriginStore` (`mission_origins` table), the agent loop sets it for the iteration so `append_to_outbox` writes a `[conversation:…]` header, and the outbox flush saves the notification with that conversation (`MIXED_CONVERSATION` when a flush merges two threads).
+- **`notification_origin.py`** — Ties a mission's outbox notifications to the chat conversation (Slack thread) it was asked for in: `insert_pending_mission(s)` records the origin in `OriginStore` (`mission_origins` table), the agent loop names the running mission's conversation in `instance/.outbox-conversation`, the outbox flush (and the end-of-mission sweep in `_sleep_between_runs`) tags outbox content with a `[conversation:…]` header under the outbox lock, and the flush saves the notification with that conversation (`MIXED_CONVERSATION` when two threads mix).
 - **`outcome_line.py`** — Fixed templates for the one end-of-mission chat message (`SKILL_COMPLETION`: skill → emoji, success verb, failure noun; `PIPELINE_MILESTONES`: a `/handle` tick's line) and the `KOAN_OUTCOME_*` stdout hand-over markers. Pure; shared by `run._notify_mission_end` and `messaging_level.report_outcome` (the one call a tracked skill's runner ends with).
 
 **Process management:**

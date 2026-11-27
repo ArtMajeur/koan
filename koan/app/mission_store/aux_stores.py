@@ -344,8 +344,11 @@ class OriginStore:
 
     @staticmethod
     def _key(text: str) -> str:
+        # The bridge records the queued entry ("- [project:x] …"); the agent
+        # loop looks up the picked title, which has its project tag removed.
         from app.missions import canonical_mission_key
-        return canonical_mission_key(text)
+        from app.utils import PROJECT_TAG_STRIP_RE
+        return canonical_mission_key(PROJECT_TAG_STRIP_RE.sub("", text))
 
     def record(self, text: str, conversation: str) -> None:
         """Remember where a mission was asked for; an empty conversation is skipped."""
@@ -369,3 +372,8 @@ class OriginStore:
                 "ORDER BY id DESC LIMIT 1",
                 (self._key(text),)).fetchone()
         return row["conversation"] if row else ""
+
+    def forget(self, text: str) -> None:
+        """Drop every recorded conversation for a mission."""
+        with _connect(self._db) as conn:
+            conn.execute("DELETE FROM mission_origins WHERE key=?", (self._key(text),))

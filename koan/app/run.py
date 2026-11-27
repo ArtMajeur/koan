@@ -1929,8 +1929,8 @@ def main_loop():
                     e, consecutive_errors, koan_root, instance,
                 )
             finally:
-                from app.notification_origin import set_outbox_conversation
-                set_outbox_conversation("")
+                from app.notification_origin import end_mission_conversation
+                end_mission_conversation(instance)
 
     except KeyboardInterrupt:
         current = _read_current_project(koan_root)
@@ -1985,6 +1985,11 @@ def _sleep_between_runs(
 
     Checks for pending missions first — skips sleep entirely if found.
     """
+    # The mission is over: tips and GitHub/Jira notices sent while idling
+    # belong to no conversation.
+    from app.notification_origin import end_mission_conversation
+    end_mission_conversation(instance)
+
     if check_pending_missions(instance):
         log("koan", "Pending missions found — skipping sleep")
         if run_num:
@@ -3651,6 +3656,9 @@ def _finalize_mission(
         recorded = record_outcome(instance, mission_title, status,
                                   reason_category=reason,
                                   detail=failure_detail or (cause_tag or None))
+        # Terminal: a later identical request must not reuse this thread.
+        from app.notification_origin import forget_mission_origin
+        forget_mission_origin(instance, mission_title)
         # A dropped authoritative write silently reverts the REST API to the
         # known-buggy absence-inference heuristic (#2285). Surface it distinctly
         # from a hard exception so a persistently failing outcome log is visible.

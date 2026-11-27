@@ -160,19 +160,20 @@ absence-inference heuristic that mis-reported pruned/renamed/crashed missions as
 -- of any export. Rows are only written for a non-empty conversation.
 CREATE TABLE IF NOT EXISTS mission_origins (
     id           INTEGER PRIMARY KEY,
-    key          TEXT NOT NULL,   -- canonical_mission_key(title without [project:])
+    key          TEXT NOT NULL,   -- canonical_mission_key(text without [project:])
     conversation TEXT NOT NULL,
     recorded_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_origins_key ON mission_origins(key);
 ```
 
-Owned by `OriginStore`. The bridge records a row when it queues a chat message
-as a mission; the agent loop reads `OriginStore.conversation_for(title)` when it
-runs that mission, to tag the mission's outbox notifications (see the "Chat
-history is scoped per conversation" contract in `specs/components/bridge.md`).
-The newest row wins when the same mission text was asked for twice. Row-capped
-at `OriginStore.KEEP` (newest retained).
+Owned by `OriginStore`. `insert_pending_mission(s)` records a row for each
+mission it inserts while the bridge handles a chat message; the agent loop
+reads `OriginStore.conversation_for(title)` when it plans that mission, to tag
+the mission's outbox notifications (see the "Chat history is scoped per
+conversation" contract in `specs/components/bridge.md`), and `forget(title)`
+drops it when the mission reaches Done or Failed. The newest row wins.
+Row-capped at `OriginStore.KEEP` (newest retained).
 
 The one-time ingest imports the `## CI` and Ideas sections (and the separate
 `missions-quarantine.md`) into these tables; `export_view` renders CI + Ideas back

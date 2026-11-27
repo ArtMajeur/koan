@@ -159,22 +159,39 @@ awake.py (loop, ~3s poll)
   `Kōan (notification)` and covered by the prompt rule below, and a
   notification produced by a mission belongs to the conversation that mission
   was requested in:
-  - When a chat message is queued as a mission, the bridge records the
-    mission's origin conversation in the mission store's `mission_origins`
-    table, keyed by `canonical_mission_key` (the same identity the outcome log
-    uses, so it survives requeue and the store's rebuild-on-write). Nothing is
-    recorded for an empty conversation.
-  - While the agent loop runs a mission (from the plan until the iteration
-    ends), every `append_to_outbox` call in that process prefixes its block
-    with a `[conversation:<thread_ts>]` header naming that origin. The
-    conversation is never written into the mission text itself, so mission
-    text cannot choose it.
-  - The outbox flush strips those headers before formatting and saves the sent
-    notification with that `conversation`. A flush that merged blocks from
-    two or more different conversations is saved as the `mixed` conversation,
+  - Whenever the bridge queues a mission while handling a chat message
+    (`insert_pending_mission(s)`, so free text, `/mission` and every skill
+    that queues one), it records the message's conversation in the mission
+    store's `mission_origins` table, keyed by `canonical_mission_key` of the
+    entry without its `[project:]` tag (the title the agent loop picks). The
+    key survives requeue and the store's rebuild-on-write. Nothing is
+    recorded for an empty conversation or for a duplicate the store did not
+    insert. The row is deleted when the mission reaches Done or Failed, so a
+    later identical request starts clean.
+  - While the agent loop runs a mission, `instance/.outbox-conversation`
+    names that mission's conversation. It is written when the iteration
+    plans the mission and removed when `_sleep_between_runs` starts (or by
+    `main_loop` after a crashed iteration), so idle-time notices are never
+    tagged. The outbox is written by the run loop, by skill runners and by
+    the agent CLI itself, so the conversation cannot travel with each write:
+    the flush prefixes everything it reads while the file exists with a
+    `[conversation:<thread_ts>]` header, and removing the file first tags
+    whatever is still waiting in the outbox. Both happen under the outbox
+    lock, so every block written during the mission is tagged exactly once.
+    The conversation is never written into the mission text, so mission text
+    cannot choose it.
+  - The flush tags before it stages, so a crash-recovered or re-queued send
+    keeps its header. It strips the headers before formatting and saves the
+    sent notification with that `conversation`. A flush whose blocks name two
+    or more different conversations is saved as the `mixed` conversation,
     which no thread replays, so one thread's mission text never reaches
-    another thread. Headers are not authenticated: a forged header can only
-    narrow who replays a notification, never widen it.
+    another thread. `append_to_outbox` starts every block on a new line so a
+    header is always recognised. Headers are not authenticated: text that
+    forges one can move a notification that every thread would see anyway
+    into one thread's own turns (past the shared cap), but cannot show it to
+    anyone who would not see it otherwise.
+  - Parallel sessions are reaped outside any mission's window, so their
+    notifications stay untagged.
   - A thread replays the notifications tagged with its own conversation as
     its own turns. The empty conversation (Telegram and the dashboard, where
     notifications are posted) replays every notification, tagged or not, as

@@ -16,7 +16,9 @@ from typing import Optional, Tuple
 
 from app.bridge_log import log
 from app.conversation_history import save_conversation_message
-from app.notification_origin import parse_outbox_conversation
+from app.notification_origin import (
+    current_mission_conversation, parse_outbox_conversation, tag,
+)
 from app.format_outbox import (
     fallback_format,
     format_message,
@@ -148,6 +150,9 @@ class OutboxManager:
                 fcntl.flock(f, fcntl.LOCK_EX)
                 try:
                     content = f.read().strip()
+                    # Read under the lock the run loop's end-of-mission sweep
+                    # also takes, so a block is tagged here or there, never lost.
+                    content = tag(content, current_mission_conversation(self._instance_dir))
                     if content:
                         atomic_write(staging, content)
                         f.seek(0)

@@ -932,6 +932,18 @@ def _locked_missions_rw(missions_path: Path, transform):
     return new_content
 
 
+def _record_chat_origin(missions_path: Path, entry: str) -> None:
+    """Remember the chat conversation a newly queued mission was asked for in.
+
+    Only the bridge sets a chat origin, so missions the agent loop queues
+    itself (recurring, CI, GitHub) record nothing.
+    """
+    from app.conversation_history import get_chat_origin
+    from app.notification_origin import record_mission_origin
+    conversation, _sender = get_chat_origin()
+    record_mission_origin(Path(missions_path).parent, entry, conversation)
+
+
 def insert_pending_mission(
     missions_path: Path, entry: str, *, urgent: bool = False,
 ) -> bool:
@@ -960,6 +972,8 @@ def insert_pending_mission(
         return insert_mission(content, entry, urgent=urgent)
 
     _locked_missions_rw(missions_path, _transform)
+    if inserted:
+        _record_chat_origin(missions_path, entry)
     return inserted
 
 
@@ -994,6 +1008,9 @@ def insert_pending_missions(
         return content
 
     _locked_missions_rw(missions_path, _transform)
+    for entry, inserted in zip(entries, results):
+        if inserted:
+            _record_chat_origin(missions_path, entry)
     return results
 
 
@@ -1458,14 +1475,16 @@ def append_to_outbox(outbox_path: Path, content: str, priority=None):
         except ImportError:
             pass  # If import fails, write without header (treated as action)
 
-    # While the agent loop runs a mission, its notifications belong to the
-    # conversation that asked for it (see app.notification_origin).
-    from app.notification_origin import outbox_header
-    content = outbox_header() + content
-
-    with open(outbox_path, "a", encoding="utf-8") as f:
+    with open(outbox_path, "a+", encoding="utf-8") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
+            # Headers are matched at line start, and the agent CLI writes its
+            # conclusion without a trailing newline.
+            end = f.seek(0, 2)
+            if end:
+                f.seek(end - 1)
+                if f.read(1) != "\n":
+                    content = "\n" + content
             f.write(content)
             f.flush()
         finally:
