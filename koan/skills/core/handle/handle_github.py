@@ -6,6 +6,7 @@ move returns why it failed, so the runner can say so on the issue.
 """
 
 import json
+import re
 import sys
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple
@@ -35,6 +36,11 @@ _LINKED_PRS_QUERY = (
     "nodes{url number state isCrossRepository headRefName updatedAt author{login}"
     " repository{name owner{login}}}}}}}"
 )
+
+
+_BLOCKQUOTE_TAG_RE = re.compile(r"<blockquote\b.*?(?:</blockquote>|\Z)", re.IGNORECASE | re.DOTALL)
+_QUOTE_START_RE = re.compile(r"\s{0,3}>")
+_TILDE_FENCE_RE = re.compile(r"~~~.*?(?:~~~|\Z)", re.DOTALL)  # the mention parser only knows ```
 
 
 def _log(msg: str) -> None:
@@ -116,22 +122,68 @@ def same_login(a: str, b: str) -> bool:
     return bool(canonical) and canonical == _canonical_login(b)
 
 
-def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:
-    """Author of the latest ``@<bot> handle`` comment newer than *since* ("" if none).
+def own_words(body: str) -> str:
+    """A comment without its code and without what it quotes.
 
+    Code goes first (fenced blocks and inline spans, as the mention parser
+    removes them): a ``>`` line inside a block is not a quote, and treating it
+    as one would swallow the closing fence and expose the next block's text.
+    Then ``<blockquote>`` elements and ``>`` blocks; a quote block runs to the
+    next blank line, since Markdown lets its later lines drop the ``>``.
+    """
+    from app.github_notifications import _CODE_BLOCK_RE
+
+    code_free = _TILDE_FENCE_RE.sub("", _CODE_BLOCK_RE.sub("", body or ""))
+    prose = _BLOCKQUOTE_TAG_RE.sub("", code_free)
+    kept, quoting = [], False
+    for line in prose.splitlines():
+        if _QUOTE_START_RE.match(line):
+            quoting = True
+        elif not line.strip():
+            quoting = False
+            kept.append(line)
+        elif not quoting:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def handle_requests(
+    comments: List[dict], bot: str, since: float = 0,
+) -> List[Tuple[str, str, float]]:
+    """``(author, text, created_at)`` of every ``@<bot> handle`` comment newer than *since*, oldest first.
+
+    *text* is what the author wrote besides the command, code and quotes left
+    out (:func:`own_words`): a quote reply of somebody's ``@<bot> handle …``
+    still pokes, as it always did, but carries no words of its author's.
     Parsed like every @mention command, so the instruction quoted from a gate
     comment (`` `@<bot> handle` `` in a code span) is not a request.
     """
     from app.github_notifications import parse_mention_command
 
-    for comment in reversed(comments):
+    found = []
+    for comment in comments:
         if comment.get("created_at", 0) <= since:
-            break
+            continue
         author = comment.get("author") or ""
         command = parse_mention_command(comment.get("body") or "", bot)
         if command and command[0] == "handle" and not same_login(author, bot):
-            return author
-    return ""
+            own = parse_mention_command(own_words(comment.get("body") or ""), bot)
+            text = own[1] if own and own[0] == "handle" else ""
+            found.append((author, text, comment.get("created_at", 0)))
+    return found
+
+
+def latest_handle_request(
+    comments: List[dict], bot: str, since: float = 0,
+) -> Tuple[str, str, float]:
+    """The latest of :func:`handle_requests`, or ``("", "", 0)``."""
+    found = handle_requests(comments, bot, since)
+    return found[-1] if found else ("", "", 0)
+
+
+def latest_handle_mention(comments: List[dict], bot: str, since: float = 0) -> str:
+    """Author of the latest ``@<bot> handle`` comment newer than *since* ("" if none)."""
+    return latest_handle_request(comments, bot, since)[0]
 
 
 def is_authorized(owner: str, repo: str, login: str, project_name: str) -> bool:
@@ -168,6 +220,21 @@ def post_comment(owner: str, repo: str, number: str, body: str) -> None:
 
     if not post_reply(owner, repo, number, body):
         raise RuntimeError(f"could not comment on {owner}/{repo}#{number}")
+
+
+def create_issue(owner: str, repo: str, title: str, body: str) -> str:
+    """Open an issue in *owner/repo* and return its URL (credentials are redacted).
+
+    One attempt only: a creation that timed out or answered 502 has often
+    happened, and retrying it would open the issue twice.
+    """
+    from app.leak_detector import scan_and_redact
+
+    return run_gh(
+        "issue", "create", "--title", scan_and_redact(title, context="Issue title"),
+        "--body", scan_and_redact(body, context="Issue body"),
+        "--repo", f"{owner}/{repo}", max_attempts=1,
+    ).strip()
 
 
 def assign_self(owner: str, repo: str, number: str) -> bool:
