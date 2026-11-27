@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # Component Spec — Telegram Bridge
@@ -158,9 +158,15 @@ awake.py (loop, ~3s poll)
   reply to: every conversation sees the last three of them. They are **not**
   trusted text — a mission notification quotes the mission someone asked for
   and the result it produced, after an AI rewrite — so they are labelled
-  `Kōan (notification)` and covered by the prompt rule below; tagging each
-  notification with the conversation of the mission that produced it is the
-  structural fix still to come. People who share one conversation (a Slack
+  `Kōan (notification)` and covered by the prompt rule below. Sharing them is
+  deliberate: a notification cannot reinforce itself the way a replayed chat
+  reply did, putting text into one takes a real mission, and the history is
+  compacted hourly. Tagging each notification with the conversation of the
+  mission that produced it was tried and rejected: the outbox is written by
+  the run loop, skill runners and the agent CLI in separate processes and
+  flushed in batches, so per-thread routing needs routing metadata outside
+  the message text (in-text headers can be forged), a change to the
+  crash-safe flush that costs more than the risk it removes. People who share one conversation (a Slack
   thread, or Telegram and the dashboard, which share the empty conversation)
   also share its replay, and there too the prompt rule is the only defence.
   Replayed turns are labelled with their sender, the current message names its
